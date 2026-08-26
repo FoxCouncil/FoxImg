@@ -223,7 +223,7 @@ UiCreateControls PROC hParent:DWORD
     invoke AddColumn, 3, offset szColDate, 0, LVCFMT_LEFT
     invoke AddColumn, 4, offset szColLBA, 0, LVCFMT_RIGHT
 
-    invoke CreateWindowExW, 0, offset szStatusClass, NULL, WS_CHILD or WS_VISIBLE or SBARS_SIZEGRIP, 0, 0, 0, 0, hParent, IDC_STATUS, g_hInst, NULL
+    invoke CreateWindowExW, 0, offset szStatusClass, NULL, WS_CHILD or WS_VISIBLE or WS_CLIPSIBLINGS or SBARS_SIZEGRIP, 0, 0, 0, 0, hParent, IDC_STATUS, g_hInst, NULL
     mov g_hStatus, eax
     invoke UiSetStatus, offset szReady
 
@@ -569,7 +569,7 @@ UiOnNotify PROC USES esi edi pNMHDR:DWORD
             .IF eax != 0
                 invoke UiFillListNode, eax
             .ENDIF
-        .ELSEIF ecx == TVN_BEGINDRAGW
+        .ELSEIF ecx == TVN_BEGINDRAGW && g_jobBusy == 0
             mov eax, [esi].NMTREEVIEWW.itemNew.hItem
             invoke SendMessageW, g_hTree, TVM_SELECTITEM, TVGN_CARET, eax
             invoke DndBeginDrag, TRUE
@@ -584,7 +584,12 @@ UiOnNotify PROC USES esi edi pNMHDR:DWORD
     .ENDIF
 
     .IF ecx == LVN_BEGINDRAG
-        invoke DndBeginDrag, FALSE
+        .IF g_jobBusy == 0
+            invoke DndBeginDrag, FALSE
+        .ENDIF
+    .ELSEIF ecx == LVN_BEGINLABELEDITW && g_jobBusy != 0
+        mov eax, TRUE                       ; refuse edits while a job owns the model
+        ret
     .ELSEIF ecx == NM_DBLCLK
         invoke AppCommand, IDM_OPENDIR
     .ELSEIF ecx == LVN_ITEMCHANGED

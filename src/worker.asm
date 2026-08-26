@@ -1,0 +1,427 @@
+; FoxImg - background jobs: one worker thread, progress bar + cancel in the status bar, UI stays responsive
+;
+; While a job runs the UI thread keeps pumping messages; commands, edits and drops are refused (JobBusy).
+; The worker only reads the model (save, extract) or appends to it (add) while the list is emptied, so no locking is needed.
+include foximg.inc
+
+JOB_MAX_NODES   equ 1024
+JOB_PATHS_MAX   equ 65536       ; WCHARs
+
+.data
+g_jobBusy       dd 0
+g_jobKind       dd 0
+g_jobCancel     dd 0
+g_progDone      dd 0
+g_progTotal     dd 0            ; 0 = unknown (marquee)
+g_hProgress     dd 0
+g_hCancelBtn    dd 0
+g_hJobThread    dd 0
+g_jobNode       dd 0            ; JOB_ADD target directory
+g_nJobNodes     dd 0
+g_jobPaths      dd 0            ; heap WCHAR list, double-NUL terminated
+g_jobPathsEnd   dd 0
+g_jobResult     dd 0
+g_bMarquee      dd 0
+
+WSTR szProgressClass, <msctls_progress32>
+WSTR szButtonClass, <BUTTON>
+WSTR szCancel, <Cancel>
+WSTR szJobSave, <Writing image>
+WSTR szJobExtract, <Extracting>
+WSTR szJobAdd, <Adding files>
+WSTR szCancelling, <Cancelling...>
+szPctFmt        dw '%','s','.','.','.',' ',' ','%','u','%','%',0
+szDotsFmt       dw '%','s','.','.','.',0
+
+.data?
+g_jobPath       dw MAX_PATH dup(?)
+g_jobDir        dw MAX_PATH dup(?)
+g_jobNodes      dd JOB_MAX_NODES dup(?)
+
+.code
+
+JobThreadProc   PROTO :DWORD
+
+; ---------------------------------------------------------------------------
+; UI pieces
+; ---------------------------------------------------------------------------
+; The status bar owner-draws its parts on every update and would paint over siblings, so the progress bar
+; and the cancel button are its children; a subclass forwards the button's WM_COMMAND to us.
+StatusSubclassProc PROC hWnd:DWORD, uMsg:DWORD, wParam:DWORD, lParam:DWORD, uIdSubclass:DWORD, dwRefData:DWORD
+    .IF uMsg == WM_COMMAND
+        movzx eax, word ptr wParam
+        .IF eax == IDC_CANCEL
+            invoke JobCancel
+            xor eax, eax
+            ret
+        .ENDIF
+    .ENDIF
+    invoke DefSubclassProc, hWnd, uMsg, wParam, lParam
+    ret
+StatusSubclassProc ENDP
+
+JobInit PROC hParent:DWORD
+    invoke CreateWindowExW, 0, offset szProgressClass, NULL, WS_CHILD, 0, 0, 0, 0, g_hStatus, IDC_PROGRESS, g_hInst, NULL
+    mov g_hProgress, eax
+    invoke SendMessageW, g_hProgress, PBM_SETRANGE32, 0, 1000
+    invoke CreateWindowExW, 0, offset szButtonClass, offset szCancel, WS_CHILD or BS_PUSHBUTTON, 0, 0, 0, 0, g_hStatus, IDC_CANCEL, g_hInst, NULL
+    mov g_hCancelBtn, eax
+    invoke SendMessageW, g_hCancelBtn, WM_SETFONT, g_hFont, TRUE
+    invoke SetWindowSubclass, g_hStatus, offset StatusSubclassProc, 2, 0
+    ret
+JobInit ENDP
+
+; Progress bar over status part 0, cancel button at the right edge of part 1 (status-bar client coordinates)
+JobLayout PROC
+    LOCAL rc:RECT
+    LOCAL x:DWORD
+    LOCAL y:DWORD
+    LOCAL cxP:DWORD
+    LOCAL cyP:DWORD
+    LOCAL cxBtn:DWORD
+    .IF g_hProgress == 0 || g_hStatus == 0
+        ret
+    .ENDIF
+    invoke SendMessageW, g_hStatus, SB_GETRECT, 0, addr rc
+    mov eax, rc.left
+    inc eax
+    mov x, eax
+    mov eax, rc.top
+    inc eax
+    mov y, eax
+    mov eax, rc.right
+    sub eax, rc.left
+    sub eax, 2
+    mov cxP, eax
+    mov eax, rc.bottom
+    sub eax, rc.top
+    sub eax, 2
+    mov cyP, eax
+    invoke MoveWindow, g_hProgress, x, y, cxP, cyP, TRUE
+
+    invoke SendMessageW, g_hStatus, SB_GETRECT, 1, addr rc
+    invoke Scale, 80
+    mov cxBtn, eax
+    mov eax, rc.right
+    sub eax, cxBtn
+    sub eax, 2
+    mov x, eax
+    invoke MoveWindow, g_hCancelBtn, x, y, cxBtn, cyP, TRUE
+    ret
+JobLayout ENDP
+
+JobBusy PROC
+    mov eax, g_jobBusy
+    ret
+JobBusy ENDP
+
+JobSetCursor PROC
+    .IF g_jobBusy == 0
+        xor eax, eax
+        ret
+    .ENDIF
+    invoke LoadCursorW, NULL, IDC_WAIT
+    invoke SetCursor, eax
+    mov eax, TRUE
+    ret
+JobSetCursor ENDP
+
+JobStatusText PROC
+    LOCAL szText[128]:WORD
+    LOCAL pct:DWORD
+    mov eax, g_jobKind
+    mov ecx, offset szJobSave
+    .IF eax == JOB_EXTRACT
+        mov ecx, offset szJobExtract
+    .ELSEIF eax == JOB_ADD
+        mov ecx, offset szJobAdd
+    .ENDIF
+    .IF g_jobCancel != 0
+        invoke UiSetStatusPart, 1, offset szCancelling
+        ret
+    .ENDIF
+    .IF g_progTotal != 0
+        mov eax, g_progDone
+        shr eax, 10
+        mov edx, g_progTotal
+        shr edx, 10
+        .IF edx == 0
+            inc edx
+        .ENDIF
+        push ecx
+        mov ecx, edx
+        xor edx, edx
+        imul eax, 100
+        div ecx
+        .IF eax > 100
+            mov eax, 100
+        .ENDIF
+        mov pct, eax
+        pop ecx
+        invoke wsprintfW, addr szText, offset szPctFmt, ecx, pct
+    .ELSE
+        invoke wsprintfW, addr szText, offset szDotsFmt, ecx
+    .ENDIF
+    invoke UiSetStatusPart, 1, addr szText
+    ret
+JobStatusText ENDP
+
+JobOnTimer PROC
+    .IF g_jobBusy == 0
+        ret
+    .ENDIF
+    .IF g_progTotal != 0
+        .IF g_bMarquee != 0
+            invoke SendMessageW, g_hProgress, PBM_SETMARQUEE, FALSE, 0
+            mov g_bMarquee, 0
+        .ENDIF
+        mov eax, g_progDone
+        shr eax, 10
+        mov edx, g_progTotal
+        shr edx, 10
+        .IF edx == 0
+            inc edx
+        .ENDIF
+        mov ecx, edx
+        xor edx, edx
+        imul eax, 1000
+        div ecx
+        .IF eax > 1000
+            mov eax, 1000
+        .ENDIF
+        invoke SendMessageW, g_hProgress, PBM_SETPOS, eax, 0
+    .ELSEIF g_bMarquee == 0
+        invoke SendMessageW, g_hProgress, PBM_SETMARQUEE, TRUE, 50
+        mov g_bMarquee, 1
+    .ENDIF
+    invoke JobStatusText
+    ret
+JobOnTimer ENDP
+
+JobCancel PROC
+    .IF g_jobBusy != 0
+        mov g_jobCancel, TRUE
+        invoke EnableWindow, g_hCancelBtn, FALSE
+        invoke JobStatusText
+    .ENDIF
+    ret
+JobCancel ENDP
+
+; ---------------------------------------------------------------------------
+; Lifecycle
+; ---------------------------------------------------------------------------
+JobBegin PROC kind:DWORD
+    LOCAL tid:DWORD
+    .IF g_jobBusy != 0
+        xor eax, eax
+        ret
+    .ENDIF
+    mov eax, kind
+    mov g_jobKind, eax
+    mov g_jobCancel, 0
+    mov g_progDone, 0
+    mov g_jobResult, 0
+    mov g_bMarquee, 0
+    mov g_jobBusy, TRUE
+    invoke CreateThread, NULL, 0, offset JobThreadProc, 0, 0, addr tid
+    .IF eax == 0
+        mov g_jobBusy, 0
+        xor eax, eax
+        ret
+    .ENDIF
+    mov g_hJobThread, eax
+    invoke JobLayout
+    invoke SendMessageW, g_hProgress, PBM_SETPOS, 0, 0
+    invoke ShowWindow, g_hProgress, SW_SHOW
+    invoke EnableWindow, g_hCancelBtn, TRUE
+    invoke ShowWindow, g_hCancelBtn, SW_SHOW
+    invoke SetTimer, g_hWnd, JOB_TIMER_ID, 100, NULL
+    invoke JobStatusText
+    mov eax, TRUE
+    ret
+JobBegin ENDP
+
+JobOnDone PROC result:DWORD
+    LOCAL kind:DWORD
+    .IF g_jobBusy == 0
+        ret
+    .ENDIF
+    invoke KillTimer, g_hWnd, JOB_TIMER_ID
+    .IF g_hJobThread != 0
+        invoke CloseHandle, g_hJobThread
+        mov g_hJobThread, 0
+    .ENDIF
+    invoke ShowWindow, g_hProgress, SW_HIDE
+    invoke ShowWindow, g_hCancelBtn, SW_HIDE
+    invoke SendMessageW, g_hProgress, PBM_SETMARQUEE, FALSE, 0
+    mov g_bMarquee, 0
+    mov eax, g_jobKind
+    mov kind, eax
+    mov g_jobBusy, 0
+    mov g_jobKind, JOB_NONE
+    .IF g_jobPaths != 0
+        invoke VfsFreeMem, g_jobPaths
+        mov g_jobPaths, 0
+    .ENDIF
+    invoke AppJobFinished, kind, result
+    ret
+JobOnDone ENDP
+
+; ---------------------------------------------------------------------------
+; Job inputs
+; ---------------------------------------------------------------------------
+JobStartSave PROC pszTmpPath:DWORD
+    .IF g_jobBusy != 0
+        xor eax, eax
+        ret
+    .ENDIF
+    invoke lstrcpynW, offset g_jobPath, pszTmpPath, MAX_PATH
+    mov g_progTotal, 0                      ; the writer fills it in once the layout is known
+    invoke JobBegin, JOB_SAVE
+    ret
+JobStartSave ENDP
+
+JobNodesReset PROC
+    mov g_nJobNodes, 0
+    ret
+JobNodesReset ENDP
+
+JobNodesAdd PROC pNode:DWORD, lParam:DWORD
+    mov eax, g_nJobNodes
+    .IF eax < JOB_MAX_NODES
+        mov ecx, pNode
+        mov g_jobNodes[eax * 4], ecx
+        inc g_nJobNodes
+    .ENDIF
+    ret
+JobNodesAdd ENDP
+
+; Bytes below a node (files only)
+NodeBytes PROC USES esi pNode:DWORD
+    LOCAL total:DWORD
+    mov esi, pNode
+    test [esi].NODE.nflags, NF_DIR
+    .IF ZERO?
+        mov eax, [esi].NODE.dataSize
+        ret
+    .ENDIF
+    mov total, 0
+    mov esi, [esi].NODE.pFirstChild
+    .WHILE esi != 0
+        invoke NodeBytes, esi
+        add total, eax
+        mov esi, [esi].NODE.pNextSibling
+    .ENDW
+    mov eax, total
+    ret
+NodeBytes ENDP
+
+JobStartExtract PROC USES ebx pszDir:DWORD
+    .IF g_jobBusy != 0 || g_nJobNodes == 0
+        xor eax, eax
+        ret
+    .ENDIF
+    invoke lstrcpynW, offset g_jobDir, pszDir, MAX_PATH
+    mov g_progTotal, 0
+    xor ebx, ebx
+    .WHILE ebx < g_nJobNodes
+        invoke NodeBytes, g_jobNodes[ebx * 4]
+        add g_progTotal, eax
+        inc ebx
+    .ENDW
+    .IF g_progTotal == 0
+        mov g_progTotal, 1
+    .ENDIF
+    invoke JobBegin, JOB_EXTRACT
+    ret
+JobStartExtract ENDP
+
+JobPathsReset PROC
+    .IF g_jobPaths == 0
+        invoke VfsAlloc, JOB_PATHS_MAX * 2
+        mov g_jobPaths, eax
+    .ENDIF
+    mov eax, g_jobPaths
+    mov g_jobPathsEnd, eax
+    .IF eax != 0
+        mov word ptr [eax], 0
+    .ENDIF
+    ret
+JobPathsReset ENDP
+
+JobPathsAdd PROC pszPath:DWORD
+    .IF g_jobPaths == 0
+        ret
+    .ENDIF
+    invoke lstrlenW, pszPath
+    mov ecx, g_jobPathsEnd
+    sub ecx, g_jobPaths
+    shr ecx, 1
+    add ecx, eax
+    add ecx, 2
+    .IF ecx >= JOB_PATHS_MAX
+        ret
+    .ENDIF
+    invoke lstrcpyW, g_jobPathsEnd, pszPath
+    invoke lstrlenW, g_jobPathsEnd
+    mov ecx, g_jobPathsEnd
+    lea ecx, [ecx + eax * 2 + 2]
+    mov g_jobPathsEnd, ecx
+    mov word ptr [ecx], 0
+    ret
+JobPathsAdd ENDP
+
+JobStartAdd PROC pDirNode:DWORD
+    .IF g_jobBusy != 0 || g_jobPaths == 0 || pDirNode == 0
+        xor eax, eax
+        ret
+    .ENDIF
+    mov eax, pDirNode
+    mov g_jobNode, eax
+    mov g_progTotal, 0                      ; unknown -> marquee
+    ; the worker may replace nodes shown in the list; empty it first
+    invoke UiFillListNode, 0
+    invoke JobBegin, JOB_ADD
+    ret
+JobStartAdd ENDP
+
+; ---------------------------------------------------------------------------
+; Worker thread
+; ---------------------------------------------------------------------------
+JobThreadProc PROC USES esi ebx lpParam:DWORD
+    LOCAL result:DWORD
+    mov result, FALSE
+    mov eax, g_jobKind
+    .IF eax == JOB_SAVE
+        invoke IsoWrite, offset g_jobPath
+        mov result, eax
+    .ELSEIF eax == JOB_EXTRACT
+        mov result, TRUE
+        xor ebx, ebx
+        .WHILE ebx < g_nJobNodes
+            .BREAK .IF g_jobCancel != 0
+            invoke VfsExtract, g_jobNodes[ebx * 4], offset g_jobDir
+            .IF eax == 0
+                mov result, FALSE
+            .ENDIF
+            inc ebx
+        .ENDW
+        .IF g_jobCancel != 0
+            mov result, FALSE
+        .ENDIF
+    .ELSEIF eax == JOB_ADD
+        mov result, TRUE
+        mov esi, g_jobPaths
+        .WHILE word ptr [esi] != 0
+            .BREAK .IF g_jobCancel != 0
+            invoke VfsAddHostPath, g_jobNode, esi
+            invoke lstrlenW, esi
+            lea esi, [esi + eax * 2 + 2]
+        .ENDW
+    .ENDIF
+    invoke PostMessageW, g_hWnd, WM_JOBDONE, result, 0
+    xor eax, eax
+    ret
+JobThreadProc ENDP
+
+END

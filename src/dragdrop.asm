@@ -178,7 +178,9 @@ TgtHilite ENDP
 
 TgtDragEnter PROC pThis:DWORD, pDataObj:DWORD, grfKeyState:DWORD, ptx:DWORD, pty:DWORD, pdwEffect:DWORD
     mov g_curEffect, DROPEFFECT_NONE
-    .IF g_bInternalDrag != 0
+    .IF g_jobBusy != 0
+        ; a job is using the model; refuse drops until it finishes
+    .ELSEIF g_bInternalDrag != 0
         mov g_curEffect, DROPEFFECT_MOVE
     .ELSE
         invoke HasHDrop, pDataObj
@@ -301,13 +303,14 @@ TgtDrop PROC USES esi ebx pThis:DWORD, pDataObj:DWORD, grfKeyState:DWORD, ptx:DW
     invoke GlobalLock, stg.hGlobal
     mov hDrop, eax
     .IF eax != 0
+        invoke JobPathsReset
         invoke DragQueryFileW, hDrop, -1, NULL, 0
         mov n, eax
         xor ebx, ebx
         .WHILE ebx < n
             invoke DragQueryFileW, hDrop, ebx, addr szFile, MAX_PATH
             .IF eax != 0
-                invoke VfsAddHostPath, pDir, addr szFile
+                invoke JobPathsAdd, addr szFile
             .ENDIF
             inc ebx
         .ENDW
@@ -316,7 +319,7 @@ TgtDrop PROC USES esi ebx pThis:DWORD, pDataObj:DWORD, grfKeyState:DWORD, ptx:DW
         mov dword ptr [ecx], DROPEFFECT_COPY
         mov eax, pDir
         mov g_pCurDir, eax
-        invoke PostMessageW, g_hWnd, WM_COMMAND, IDM_REFRESH, 0
+        invoke JobStartAdd, pDir            ; copies on the worker thread with progress
     .ENDIF
     invoke ReleaseStgMedium, addr stg
     mov eax, S_OK

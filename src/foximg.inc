@@ -592,6 +592,7 @@ WM_INITMENUPOPUP        equ 0117h
 WS_HSCROLL              equ 00100000h
 WS_VSCROLL              equ 00200000h
 WS_CLIPCHILDREN         equ 02000000h
+WS_CLIPSIBLINGS         equ 04000000h
 ES_MULTILINE            equ 0004h
 ES_AUTOVSCROLL          equ 0040h
 ES_AUTOHSCROLL          equ 0080h
@@ -949,6 +950,7 @@ TVN_BEGINDRAGW          equ TVN_FIRST - 56
 TVGN_DROPHILITE         equ 0008h
 LVIS_DROPHILITED        equ 0008h
 SB_SETPARTS             equ WM_USER + 4
+SB_GETRECT              equ WM_USER + 10
 
 FORMATETC STRUCT
     cfFormat    WORD ?
@@ -1008,6 +1010,59 @@ IDM_EXTRACTALL          equ 116
 IDM_BOOT_BIOS           equ 130
 IDM_BOOT_EFI            equ 131
 IDM_BOOT_CLEAR          equ 132
+
+; ---------------------------------------------------------------------------
+; Background jobs with progress (worker.asm)
+; ---------------------------------------------------------------------------
+WM_TIMER                equ 0113h
+WM_SETCURSOR            equ 0020h
+WM_APP                  equ 8000h
+WM_JOBDONE              equ WM_APP + 1          ; wParam = result
+IDC_WAIT                equ 7F02h
+ICC_PROGRESS_CLASS      equ 0020h
+PBM_SETPOS              equ WM_USER + 2
+PBM_SETRANGE32          equ WM_USER + 6
+PBM_SETBARCOLOR         equ WM_USER + 9
+PBM_SETBKCOLOR          equ 2001h
+PBM_SETMARQUEE          equ WM_USER + 10
+PBS_MARQUEE             equ 0008h
+BS_PUSHBUTTON           equ 0
+IDC_PROGRESS            equ 1006
+IDC_CANCEL              equ 1007
+JOB_TIMER_ID            equ 1
+
+JOB_NONE                equ 0
+JOB_SAVE                equ 1
+JOB_EXTRACT             equ 2
+JOB_ADD                 equ 3
+
+CreateThread        PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD
+SetTimer            PROTO :DWORD,:DWORD,:DWORD,:DWORD
+KillTimer           PROTO :DWORD,:DWORD
+SetCursor           PROTO :DWORD
+EnableWindow        PROTO :DWORD,:DWORD
+
+JobInit             PROTO :DWORD                ; hParent
+JobLayout           PROTO                       ; after status bar layout
+JobBusy             PROTO                       ; -> nonzero while a job runs
+JobCancel           PROTO
+JobOnTimer          PROTO
+JobOnDone           PROTO :DWORD                ; result
+JobStartSave        PROTO :DWORD                ; pszTmpPath -> BOOL started
+JobNodesReset       PROTO
+JobNodesAdd         PROTO :DWORD,:DWORD         ; pNode, lParam (UiForEachSelected callback shape)
+JobStartExtract     PROTO :DWORD                ; pszDir -> BOOL
+JobPathsReset       PROTO
+JobPathsAdd         PROTO :DWORD                ; pszPath
+JobStartAdd         PROTO :DWORD                ; pDirNode -> BOOL
+JobSetCursor        PROTO                       ; -> nonzero if the wait cursor was applied
+EXTERNDEF g_jobBusy:DWORD
+EXTERNDEF g_jobCancel:DWORD
+EXTERNDEF g_progDone:DWORD
+EXTERNDEF g_progTotal:DWORD
+EXTERNDEF g_hCancelBtn:DWORD
+EXTERNDEF g_hProgress:DWORD
+AppJobFinished      PROTO :DWORD,:DWORD         ; main.asm: kind, result
 
 ; main.asm commands callable from ui
 AppCommand          PROTO :DWORD                ; id

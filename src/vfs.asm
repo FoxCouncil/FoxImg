@@ -371,6 +371,7 @@ VfsAddHostPath PROC USES esi edi ebx pParent:DWORD, pszPath:DWORD
     .IF eax != INVALID_HANDLE_VALUE
         mov hFind, eax
         .WHILE TRUE
+            .BREAK .IF g_jobCancel != 0
             invoke lstrcmpW, addr fd2.cFileName, offset szDotName
             .IF eax != 0
                 invoke lstrcmpW, addr fd2.cFileName, offset szDotDotName
@@ -496,11 +497,17 @@ WriteAll PROC USES esi ebx hFile:DWORD, pData:DWORD, cb:DWORD
     mov esi, pData
     mov ebx, cb
     .WHILE ebx != 0
+        .IF g_jobCancel != 0
+            xor eax, eax
+            ret
+        .ENDIF
         invoke WriteFile, hFile, esi, ebx, addr written, NULL
         .IF eax == 0 || written == 0
             xor eax, eax
             ret
         .ENDIF
+        mov eax, written
+        add g_progDone, eax                 ; progress for whoever is watching
         add esi, written
         sub ebx, written
     .ENDW

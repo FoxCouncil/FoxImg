@@ -1114,6 +1114,9 @@ IsoWrite PROC USES esi ebx pszOutPath:DWORD
         jmp cleanup_fail
     .ENDIF
     invoke AssignLayout
+    mov eax, g_totalSectors
+    shl eax, 11
+    mov g_progTotal, eax                    ; every byte goes through WriteAll, which counts
 
     invoke CreateFileW, pszOutPath, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL
     .IF eax == INVALID_HANDLE_VALUE

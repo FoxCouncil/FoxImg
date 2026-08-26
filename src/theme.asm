@@ -16,6 +16,7 @@ DARK_LINES          equ 00505050h
 DARK_STATUS_BG      equ 002B2B2Bh
 DARK_MENU_HOT       equ 003A3A3Ah
 DARK_TEXT_GRAY      equ 00808080h
+DARK_ACCENT         equ 00D28C3Ch      ; #3C8CD2 progress fill
 
 .data
 g_bDark             dd 0
@@ -33,6 +34,7 @@ WSTR szExplorer, <Explorer>
 WSTR szPersonalizeKey, <Software\Microsoft\Windows\CurrentVersion\Themes\Personalize>
 WSTR szAppsUseLightTheme, <AppsUseLightTheme>
 WSTR szImmersiveColorSet, <ImmersiveColorSet>
+szEmpty         dw 0
 
 .code
 
@@ -157,6 +159,12 @@ ListSubclassProc PROC hWnd:DWORD, uMsg:DWORD, wParam:DWORD, lParam:DWORD, uIdSub
         xor eax, eax
         ret
     .ENDIF
+    .IF uMsg == WM_SETCURSOR
+        invoke JobSetCursor
+        .IF eax != 0
+            ret                             ; TRUE: wait cursor while a job runs
+        .ENDIF
+    .ENDIF
     .IF uMsg == WM_NOTIFY && g_bDark != 0
         mov edx, lParam
         .IF [edx].NMHDR.code == NM_CUSTOMDRAW
@@ -207,6 +215,19 @@ ThemeApply PROC hWnd:DWORD
     invoke SetWindowTheme, g_hList, pTheme, NULL
     .IF g_hEdit != 0
         invoke SetWindowTheme, g_hEdit, pTheme, NULL
+    .ENDIF
+    .IF g_hCancelBtn != 0
+        invoke SetWindowTheme, g_hCancelBtn, pTheme, NULL
+    .ENDIF
+    .IF g_hProgress != 0
+        ; the themed progress bar ignores colours; drop the theme in dark mode and paint it ourselves
+        .IF g_bDark != 0
+            invoke SetWindowTheme, g_hProgress, offset szEmpty, offset szEmpty
+            invoke SendMessageW, g_hProgress, PBM_SETBKCOLOR, 0, DARK_STATUS_BG
+            invoke SendMessageW, g_hProgress, PBM_SETBARCOLOR, 0, DARK_ACCENT
+        .ELSE
+            invoke SetWindowTheme, g_hProgress, NULL, NULL
+        .ENDIF
     .ENDIF
 
     invoke SendMessageW, g_hList, LVM_GETHEADER, 0, 0

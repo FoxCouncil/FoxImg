@@ -1,10 +1,13 @@
 ; FoxImg - entry point, main window, commands
 include foximg.inc
 
+VK_ESCAPE   equ 1Bh
+
 .data
 g_hInst     dd 0
 g_hWnd      dd 0
 g_hAccel    dd 0
+g_saveIsCue dd 0
 
 WSTR szClassName, <FoxImgMain>
 WSTR szTitle, <FoxImg>
@@ -17,12 +20,15 @@ WSTR szErrWrite, <Writing the image failed. Check free space and that the destin
 WSTR szErrReplace, <The image was written but the original could not be replaced.>
 WSTR szErrExtract, <Some files could not be extracted.>
 WSTR szErrBoot, <Select a file in the list first. Directories cannot be boot images.>
+WSTR szBusy, <Please wait for the current operation to finish (or cancel it).>
 WSTR szDiscard, <Discard unsaved changes?>
 WSTR szDeleteAsk, <Delete the selected items from the image?>
 WSTR szDeleteDirAsk, <Delete this folder and everything inside it?>
 WSTR szAboutText, <FoxImg v1.1 - a small native disc image utility. ISO 9660 / Joliet / El Torito; ISO, IMG, BIN/CUE.>
 WSTR szSaved, <Saved>
 WSTR szExtracted, <Extracted>
+WSTR szCancelled, <Cancelled>
+WSTR szAdded, <Files added>
 WSTR szExtIso, <iso>
 WSTR szExtCueDot, <.cue>
 WSTR szExtBinDot, <.bin>
@@ -59,13 +65,15 @@ MULTI_BUF   equ 32768
 
 .data?
 g_szMulti   dw MULTI_BUF dup(?)
+g_saveData  dw MAX_PATH dup(?)
+g_saveCue   dw MAX_PATH dup(?)
+g_saveTmp   dw MAX_PATH + 8 dup(?)
 
 .code
 
 ; ---------------------------------------------------------------------------
 ; Path helpers
 ; ---------------------------------------------------------------------------
-; Pointer to the extension (including '.') of the leaf, or to the terminating NUL when there is none
 PathExt PROC USES esi pszPath:DWORD
     mov esi, pszPath
     mov edx, 0
@@ -84,7 +92,6 @@ PathExt PROC USES esi pszPath:DWORD
     ret
 PathExt ENDP
 
-; Pointer to the leaf name
 PathLeaf PROC USES esi pszPath:DWORD
     mov esi, pszPath
     mov eax, esi
@@ -97,7 +104,6 @@ PathLeaf PROC USES esi pszPath:DWORD
     ret
 PathLeaf ENDP
 
-; pszOut = pszPath with its extension replaced by pszNewExt (".cue")
 PathWithExt PROC pszOut:DWORD, pszPath:DWORD, pszNewExt:DWORD
     invoke lstrcpynW, pszOut, pszPath, MAX_PATH - 8
     invoke PathExt, pszOut
@@ -189,7 +195,6 @@ OpenImage PROC pszPath:DWORD
     ret
 OpenImage ENDP
 
-; Cue sheet next to a 2048-byte-sector data file
 WriteCueFile PROC USES esi edi pszCue:DWORD, pszBin:DWORD
     LOCAL szText[512]:WORD
     LOCAL szAscii[512]:BYTE
@@ -221,73 +226,94 @@ WriteCueFile PROC USES esi edi pszCue:DWORD, pszBin:DWORD
     ret
 WriteCueFile ENDP
 
-; Save / convert to pszTarget. Format follows the extension: .bin/.cue -> BIN + CUE, anything else -> ISO.
-; Writes <data>.tmp, swaps it in, and reopens so every node is backed by the new file.
-SaveTo PROC pszTarget:DWORD
+; Save / convert to pszTarget on the worker thread. Format follows the extension:
+; .bin/.cue -> BIN + CUE, anything else -> ISO. SaveFinish swaps the .tmp in and reopens.
+SaveBegin PROC pszTarget:DWORD
     LOCAL szTarget[MAX_PATH]:WORD
-    LOCAL szData[MAX_PATH]:WORD
-    LOCAL szCue[MAX_PATH]:WORD
-    LOCAL szTmp[MAX_PATH + 8]:WORD
-    LOCAL bCue:DWORD
-
     invoke lstrcpynW, addr szTarget, pszTarget, MAX_PATH
-    mov bCue, FALSE
+    mov g_saveIsCue, FALSE
     invoke PathExt, addr szTarget
     push eax
     invoke lstrcmpiW, eax, offset szExtCueDot
     pop ecx
     .IF eax == 0
-        mov bCue, TRUE
-        invoke lstrcpynW, addr szCue, addr szTarget, MAX_PATH
-        invoke PathWithExt, addr szData, addr szTarget, offset szExtBinDot
+        mov g_saveIsCue, TRUE
+        invoke lstrcpynW, offset g_saveCue, addr szTarget, MAX_PATH
+        invoke PathWithExt, offset g_saveData, addr szTarget, offset szExtBinDot
     .ELSE
         invoke lstrcmpiW, ecx, offset szExtBinDot
         .IF eax == 0
-            mov bCue, TRUE
-            invoke lstrcpynW, addr szData, addr szTarget, MAX_PATH
-            invoke PathWithExt, addr szCue, addr szTarget, offset szExtCueDot
+            mov g_saveIsCue, TRUE
+            invoke lstrcpynW, offset g_saveData, addr szTarget, MAX_PATH
+            invoke PathWithExt, offset g_saveCue, addr szTarget, offset szExtCueDot
         .ELSE
-            invoke lstrcpynW, addr szData, addr szTarget, MAX_PATH
+            invoke lstrcpynW, offset g_saveData, addr szTarget, MAX_PATH
         .ENDIF
     .ENDIF
+    invoke wsprintfW, offset g_saveTmp, offset szCatFmt, offset g_saveData, offset szTmpSuffix
+    invoke JobStartSave, offset g_saveTmp
+    ret
+SaveBegin ENDP
 
-    invoke wsprintfW, addr szTmp, offset szCatFmt, addr szData, offset szTmpSuffix
-    invoke IsoWrite, addr szTmp
-    .IF eax == 0
-        invoke MessageBoxW, g_hWnd, offset szErrWrite, offset szTitle, MB_OK or MB_ICONERROR
-        xor eax, eax
+SaveFinish PROC result:DWORD
+    .IF g_jobCancel != 0
+        invoke DeleteFileW, offset g_saveTmp
+        invoke UiSetStatus, offset szCancelled
         ret
     .ENDIF
-
+    .IF result == 0
+        invoke MessageBoxW, g_hWnd, offset szErrWrite, offset szTitle, MB_OK or MB_ICONERROR
+        ret
+    .ENDIF
     invoke IsoClose                             ; release the mapping before replacing the file
-    invoke MoveFileExW, addr szTmp, addr szData, MOVEFILE_REPLACE_EXISTING
+    invoke MoveFileExW, offset g_saveTmp, offset g_saveData, MOVEFILE_REPLACE_EXISTING
     .IF eax == 0
         invoke MessageBoxW, g_hWnd, offset szErrReplace, offset szTitle, MB_OK or MB_ICONERROR
         .IF g_bHavePath != 0
             invoke OpenImage, offset g_szPath
         .ENDIF
-        xor eax, eax
         ret
     .ENDIF
-    .IF bCue != 0
-        invoke WriteCueFile, addr szCue, addr szData
-        invoke OpenImage, addr szCue
+    .IF g_saveIsCue != 0
+        invoke WriteCueFile, offset g_saveCue, offset g_saveData
+        invoke OpenImage, offset g_saveCue
     .ELSE
-        invoke OpenImage, addr szData
+        invoke OpenImage, offset g_saveData
     .ENDIF
     invoke UiSetStatus, offset szSaved
-    mov eax, TRUE
     ret
-SaveTo ENDP
+SaveFinish ENDP
+
+; Worker thread completion (UI thread)
+AppJobFinished PROC kind:DWORD, result:DWORD
+    mov eax, kind
+    .IF eax == JOB_SAVE
+        invoke SaveFinish, result
+    .ELSEIF eax == JOB_EXTRACT
+        .IF g_jobCancel != 0
+            invoke UiSetStatus, offset szCancelled
+        .ELSEIF result == 0
+            invoke MessageBoxW, g_hWnd, offset szErrExtract, offset szTitle, MB_OK or MB_ICONWARNING
+            invoke UiSetStatus, offset szExtracted
+        .ELSE
+            invoke UiSetStatus, offset szExtracted
+        .ENDIF
+    .ELSEIF eax == JOB_ADD
+        invoke UiRefreshTree
+        invoke UiUpdateTitle
+        .IF g_jobCancel != 0
+            invoke UiSetStatus, offset szCancelled
+        .ELSE
+            invoke UiSetStatus, offset szAdded
+        .ENDIF
+    .ENDIF
+    invoke UiUpdateInfo
+    ret
+AppJobFinished ENDP
 
 ; ---------------------------------------------------------------------------
 ; Commands
 ; ---------------------------------------------------------------------------
-ExtractCb PROC pNode:DWORD, lParam:DWORD
-    invoke VfsExtract, pNode, lParam
-    ret
-ExtractCb ENDP
-
 DeleteCb PROC pNode:DWORD, lParam:DWORD
     invoke BootForgetNode, pNode
     invoke VfsDelete, pNode
@@ -345,14 +371,14 @@ CmdSaveAs PROC
     .ENDIF
     invoke SaveDialog, addr szFile, offset szFilterSave, offset szExtIso, offset szSaveTitle
     .IF eax != 0
-        invoke SaveTo, addr szFile
+        invoke SaveBegin, addr szFile
     .ENDIF
     ret
 CmdSaveAs ENDP
 
 CmdSave PROC
     .IF g_bHavePath != 0
-        invoke SaveTo, offset g_szPath
+        invoke SaveBegin, offset g_szPath
     .ELSE
         invoke CmdSaveAs
     .ENDIF
@@ -361,7 +387,6 @@ CmdSave ENDP
 
 CmdExtractAll PROC USES esi
     LOCAL szDir[MAX_PATH]:WORD
-    LOCAL ok:DWORD
     .IF g_pRootNode == 0
         ret
     .ENDIF
@@ -369,22 +394,40 @@ CmdExtractAll PROC USES esi
     .IF eax == 0
         ret
     .ENDIF
-    mov ok, TRUE
+    invoke JobNodesReset
     mov esi, g_pRootNode
     mov esi, [esi].NODE.pFirstChild
     .WHILE esi != 0
-        invoke VfsExtract, esi, addr szDir
-        .IF eax == 0
-            mov ok, FALSE
-        .ENDIF
+        invoke JobNodesAdd, esi, 0
         mov esi, [esi].NODE.pNextSibling
     .ENDW
-    .IF ok == 0
-        invoke MessageBoxW, g_hWnd, offset szErrExtract, offset szTitle, MB_OK or MB_ICONWARNING
-    .ENDIF
-    invoke UiSetStatus, offset szExtracted
+    invoke JobStartExtract, addr szDir
     ret
 CmdExtractAll ENDP
+
+CmdExtract PROC
+    LOCAL szDir[MAX_PATH]:WORD
+    invoke UiCtxIsTree
+    .IF eax == 0
+        invoke SendMessageW, g_hList, LVM_GETSELECTEDCOUNT, 0, 0
+        .IF eax == 0
+            ret
+        .ENDIF
+    .ENDIF
+    invoke BrowseFolder, addr szDir
+    .IF eax == 0
+        ret
+    .ENDIF
+    invoke JobNodesReset
+    invoke UiCtxIsTree
+    .IF eax != 0
+        invoke JobNodesAdd, g_pCurDir, 0
+    .ELSE
+        invoke UiForEachSelected, offset JobNodesAdd, 0
+    .ENDIF
+    invoke JobStartExtract, addr szDir
+    ret
+CmdExtract ENDP
 
 CmdAddFiles PROC USES esi edi
     LOCAL ofn:OPENFILENAMEW
@@ -411,23 +454,23 @@ CmdAddFiles PROC USES esi edi
     .IF eax == 0
         ret
     .ENDIF
+    invoke JobPathsReset
     mov esi, offset g_szMulti
     invoke lstrlenW, esi
     lea edi, [esi + eax * 2 + 2]
     .IF word ptr [edi] == 0
-        invoke VfsAddHostPath, pDir, esi
+        invoke JobPathsAdd, esi
     .ELSE
         .WHILE word ptr [edi] != 0
             invoke wsprintfW, addr szPath, offset szJoinFmt, esi, edi
-            invoke VfsAddHostPath, pDir, addr szPath
+            invoke JobPathsAdd, addr szPath
             invoke lstrlenW, edi
             lea edi, [edi + eax * 2 + 2]
         .ENDW
     .ENDIF
     mov eax, pDir
     mov g_pCurDir, eax
-    invoke UiRefreshTree
-    invoke UiUpdateTitle
+    invoke JobStartAdd, pDir
     ret
 CmdAddFiles ENDP
 
@@ -498,29 +541,6 @@ CmdDelete PROC
     ret
 CmdDelete ENDP
 
-CmdExtract PROC
-    LOCAL szDir[MAX_PATH]:WORD
-    invoke UiCtxIsTree
-    .IF eax == 0
-        invoke SendMessageW, g_hList, LVM_GETSELECTEDCOUNT, 0, 0
-        .IF eax == 0
-            ret
-        .ENDIF
-    .ENDIF
-    invoke BrowseFolder, addr szDir
-    .IF eax == 0
-        ret
-    .ENDIF
-    invoke UiCtxIsTree
-    .IF eax != 0
-        invoke VfsExtract, g_pCurDir, addr szDir
-    .ELSE
-        invoke UiForEachSelected, offset ExtractCb, addr szDir
-    .ENDIF
-    invoke UiSetStatus, offset szExtracted
-    ret
-CmdExtract ENDP
-
 CmdOpenDir PROC
     invoke UiSelectedNode
     .IF eax != 0
@@ -548,6 +568,17 @@ CmdBoot ENDP
 
 AppCommand PROC id:DWORD
     mov eax, id
+    .IF eax == IDC_CANCEL
+        invoke JobCancel
+        ret
+    .ENDIF
+    ; everything that touches the model or the files waits for the running job
+    .IF g_jobBusy != 0
+        .IF eax != IDM_ABOUT && eax != IDM_PREVIEW && eax != IDM_OPENDIR && eax != IDM_REFRESH
+            invoke UiSetStatus, offset szBusy
+            ret
+        .ENDIF
+    .ENDIF
     .IF eax == IDM_NEW
         invoke CmdNew
     .ELSEIF eax == IDM_OPEN
@@ -589,9 +620,11 @@ AppCommand PROC id:DWORD
         invoke UiSelectedNode
         invoke PreviewShow, eax
     .ELSEIF eax == IDM_REFRESH
-        invoke UiRefreshTree
-        invoke UiUpdateInfo
-        invoke UiUpdateTitle
+        .IF g_jobBusy == 0
+            invoke UiRefreshTree
+            invoke UiUpdateInfo
+            invoke UiUpdateTitle
+        .ENDIF
     .ELSEIF eax == IDM_EXIT
         invoke SendMessageW, g_hWnd, WM_CLOSE, 0, 0
     .ELSEIF eax == IDM_ABOUT
@@ -653,10 +686,26 @@ WndProc PROC hWnd:DWORD, uMsg:DWORD, wParam:DWORD, lParam:DWORD
     mov eax, uMsg
     .IF eax == WM_CREATE
         invoke UiCreateControls, hWnd
+        invoke JobInit, hWnd
         invoke ThemeApply, hWnd
         invoke DndInit
     .ELSEIF eax == WM_SIZE
         invoke UiLayout, hWnd
+        invoke JobLayout
+    .ELSEIF eax == WM_TIMER
+        .IF wParam == JOB_TIMER_ID
+            invoke JobOnTimer
+        .ENDIF
+    .ELSEIF eax == WM_JOBDONE
+        invoke JobOnDone, wParam
+    .ELSEIF eax == WM_SETCURSOR
+        invoke JobSetCursor
+        .IF eax != 0
+            mov eax, TRUE
+            ret
+        .ENDIF
+        invoke DefWindowProcW, hWnd, uMsg, wParam, lParam
+        ret
     .ELSEIF eax == WM_ERASEBKGND
         invoke ThemeEraseBkgnd, hWnd, wParam
         ret
@@ -719,15 +768,21 @@ WndProc PROC hWnd:DWORD, uMsg:DWORD, wParam:DWORD, lParam:DWORD
         invoke UiOnNotify, lParam
         ret
     .ELSEIF eax == WM_CONTEXTMENU
-        movsx eax, word ptr lParam
-        movsx ecx, word ptr lParam[2]
-        invoke UiContextMenu, wParam, eax, ecx
+        .IF g_jobBusy == 0
+            movsx eax, word ptr lParam
+            movsx ecx, word ptr lParam[2]
+            invoke UiContextMenu, wParam, eax, ecx
+        .ENDIF
     .ELSEIF eax == WM_DROPFILES
         invoke UiOnDropFiles, wParam
     .ELSEIF eax == WM_CLOSE
-        invoke ConfirmDiscard
-        .IF eax != 0
-            invoke DestroyWindow, hWnd
+        .IF g_jobBusy != 0
+            invoke UiSetStatus, offset szBusy
+        .ELSE
+            invoke ConfirmDiscard
+            .IF eax != 0
+                invoke DestroyWindow, hWnd
+            .ENDIF
         .ENDIF
     .ELSEIF eax == WM_DESTROY
         invoke DndShutdown
@@ -756,10 +811,10 @@ start PROC
     invoke GetModuleHandleW, NULL
     mov g_hInst, eax
     invoke VfsInit
-    invoke DndInit                              ; OleInitialize (targets are registered once the controls exist)
+    invoke DndInit
 
     mov icc.dwSize, sizeof INITCOMMONCONTROLSEX
-    mov icc.dwICC, ICC_LISTVIEW_CLASSES or ICC_TREEVIEW_CLASSES or ICC_BAR_CLASSES
+    mov icc.dwICC, ICC_LISTVIEW_CLASSES or ICC_TREEVIEW_CLASSES or ICC_BAR_CLASSES or ICC_PROGRESS_CLASS
     invoke InitCommonControlsEx, addr icc
     invoke ThemeInit
 
@@ -813,6 +868,11 @@ start PROC
     .WHILE TRUE
         invoke GetMessageW, addr msg, NULL, 0, 0
         .BREAK .IF eax == 0
+        ; Escape cancels a running job (only then, so label editing keeps its own Escape)
+        .IF msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE && g_jobBusy != 0
+            invoke JobCancel
+            .CONTINUE
+        .ENDIF
         invoke TranslateAcceleratorW, g_hWnd, g_hAccel, addr msg
         .IF eax == 0
             invoke TranslateMessage, addr msg
