@@ -658,6 +658,8 @@ LVN_ENDLABELEDITW       equ LVN_FIRST - 76
 NM_DBLCLK               equ -3
 NM_RCLICK               equ -5
 TVM_GETNEXTITEM         equ TV_FIRST + 10
+TVM_GETITEMW            equ TV_FIRST + 62
+TVIF_HANDLE             equ 0010h
 TVM_HITTEST             equ TV_FIRST + 17
 TVGN_ROOT               equ 0
 TVHT_ONITEM             equ 0046h
@@ -886,6 +888,127 @@ IDM_OPENDIR             equ 121
 IDC_EDIT                equ 1004
 IDC_ICONVIEW            equ 1005
 
+; ---------------------------------------------------------------------------
+; El Torito (eltorito.asm)
+; ---------------------------------------------------------------------------
+BOOT_MAX                equ 8
+BOOT_PLATFORM_X86       equ 0
+BOOT_PLATFORM_EFI       equ 0EFh
+
+BOOTENTRY STRUCT
+    platform    DWORD ?
+    media       DWORD ?         ; 0 = no emulation, 1..3 floppy, 4 hard disk
+    loadSeg     DWORD ?
+    sysType     DWORD ?
+    sectors     DWORD ?         ; 512-byte virtual sectors to load
+    pNode       DWORD ?         ; file in the tree providing the image, or 0
+    blobExtent  DWORD ?         ; source lba in the open image when pNode == 0
+    blobSize    DWORD ?
+    bInfoTable  DWORD ?         ; patch the isolinux/GRUB boot info table on write
+    wExtent     DWORD ?         ; writer: blob extent
+BOOTENTRY ENDS
+
+BootParse           PROTO                       ; after IsoOpen + VfsBuildFromIso
+BootClear           PROTO
+BootSetEntry        PROTO :DWORD,:DWORD         ; pNode, platform -> BOOL
+BootSummary         PROTO :DWORD                ; pszBuf (>= 256 WCHARs)
+BootForgetNode      PROTO :DWORD                ; pNode about to be deleted
+BootBuildBRVD       PROTO :DWORD                ; pSector (zeroed 2048)
+BootAssignLayout    PROTO :DWORD                ; pLba (in/out) - catalog + blobs
+BootBuildCatalog    PROTO :DWORD                ; pSector
+BootWriteBlobs      PROTO                       ; hidden images (uses g_hOut)
+BootPatchInfoTables PROTO                       ; after all data is written
+EXTERNDEF g_bootCount:DWORD
+EXTERNDEF g_bootWCatalog:DWORD
+
+; isowrite.asm helpers exposed for eltorito
+IsoWritePadTo       PROTO :DWORD                ; cb written -> pad to a 2048 boundary
+EXTERNDEF g_hOut:DWORD
+EXTERNDEF g_lba:DWORD
+
+; ---------------------------------------------------------------------------
+; OLE drag and drop (dragdrop.asm)
+; ---------------------------------------------------------------------------
+CF_HDROP                equ 15
+TYMED_HGLOBAL           equ 1
+DVASPECT_CONTENT        equ 1
+DROPEFFECT_NONE         equ 0
+DROPEFFECT_COPY         equ 1
+DROPEFFECT_MOVE         equ 2
+DRAGDROP_S_DROP         equ 00040100h
+DRAGDROP_S_CANCEL       equ 00040101h
+DRAGDROP_S_USEDEFAULTCURSORS equ 00040102h
+S_OK                    equ 0
+S_FALSE                 equ 1
+E_NOINTERFACE           equ 80004002h
+MK_LBUTTON              equ 0001h
+GMEM_MOVEABLE           equ 0002h
+GMEM_ZEROINIT           equ 0040h
+LVN_BEGINDRAG           equ LVN_FIRST - 9
+TVN_BEGINDRAGW          equ TVN_FIRST - 56
+TVGN_DROPHILITE         equ 0008h
+LVIS_DROPHILITED        equ 0008h
+SB_SETPARTS             equ WM_USER + 4
+
+FORMATETC STRUCT
+    cfFormat    WORD ?
+    wPad        WORD ?
+    ptd         DWORD ?
+    dwAspect    DWORD ?
+    lindex      DWORD ?
+    tymed       DWORD ?
+FORMATETC ENDS
+
+STGMEDIUM STRUCT
+    tymed           DWORD ?
+    hGlobal         DWORD ?
+    pUnkForRelease  DWORD ?
+STGMEDIUM ENDS
+
+DROPFILES STRUCT
+    pFiles      DWORD ?
+    pt          POINT <>
+    fNC         DWORD ?
+    fWide       DWORD ?
+DROPFILES ENDS
+
+OleInitialize       PROTO :DWORD
+OleUninitialize     PROTO
+RegisterDragDrop    PROTO :DWORD,:DWORD
+RevokeDragDrop      PROTO :DWORD
+DoDragDrop          PROTO :DWORD,:DWORD,:DWORD,:DWORD
+ReleaseStgMedium    PROTO :DWORD
+SHCreateDataObject  PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD
+RegisterClipboardFormatW PROTO :DWORD
+GlobalAlloc         PROTO :DWORD,:DWORD
+GlobalLock          PROTO :DWORD
+GlobalUnlock        PROTO :DWORD
+GlobalFree          PROTO :DWORD
+GetTempPathW        PROTO :DWORD,:DWORD
+GetTickCount        PROTO
+
+DndInit             PROTO                       ; after the controls exist
+DndShutdown         PROTO
+DndBeginDrag        PROTO :DWORD                ; bFromTree
+
+; vfs additions
+VfsFindByExtent     PROTO :DWORD,:DWORD         ; pDir, lba -> file NODE* or 0
+VfsMove             PROTO :DWORD,:DWORD         ; pNode, pNewParent -> BOOL
+VfsIsAncestor       PROTO :DWORD,:DWORD         ; pMaybeAncestor, pNode -> BOOL
+
+; ui status parts
+STATUS_PARTS        equ 3
+UiSetStatusPart     PROTO :DWORD,:DWORD         ; part, pszText
+UiStatusText        PROTO :DWORD                ; part -> WCHAR*
+UiUpdateInfo        PROTO                       ; refresh format + boot parts
+UiListNodeAt        PROTO :DWORD,:DWORD         ; x, y (list client) -> NODE* or 0
+UiTreeNodeAt        PROTO :DWORD,:DWORD,:DWORD  ; x, y (tree client), bHilite -> NODE* or 0
+
+IDM_EXTRACTALL          equ 116
+IDM_BOOT_BIOS           equ 130
+IDM_BOOT_EFI            equ 131
+IDM_BOOT_CLEAR          equ 132
+
 ; main.asm commands callable from ui
 AppCommand          PROTO :DWORD                ; id
 IDM_REFRESH             equ 199
@@ -903,6 +1026,23 @@ UiCtxIsTree         PROTO                       ; -> nonzero when the context me
 ; FoxImg cross-module symbols
 ; ---------------------------------------------------------------------------
 ; iso9660.asm
+FMT_ISO         equ 0                           ; 2048-byte blocks (.iso/.img/.bin MODE1/2048)
+FMT_RAW2352_M1  equ 1                           ; raw 2352 MODE1  (data at +16)
+FMT_RAW2352_M2  equ 2                           ; raw 2352 MODE2 form 1 (data at +24)
+FMT_RAW2336     equ 3                           ; MODE2/2336 (data at +8)
+IsoSectorPtr    PROTO :DWORD                    ; lba -> pointer to 2048 user bytes or 0
+IsoCopyExtent   PROTO :DWORD,:DWORD,:DWORD      ; lba, cb, hOut -> BOOL
+IsoReadExtent   PROTO :DWORD,:DWORD,:DWORD      ; lba, cb, pDst -> BOOL
+IsoFormatName   PROTO :DWORD                    ; pszBuf (>= 48 WCHARs)
+lstrlenA        PROTO :DWORD
+lstrcmpA        PROTO :DWORD,:DWORD
+lstrcpyA        PROTO :DWORD,:DWORD
+lstrcatA        PROTO :DWORD,:DWORD
+EXTERNDEF g_secSize:DWORD
+EXTERNDEF g_nSectors:DWORD
+EXTERNDEF g_fmt:DWORD
+EXTERNDEF g_bCue:DWORD
+EXTERNDEF g_szBinPath:WORD
 IsoOpen         PROTO :DWORD                    ; pszPath -> BOOL
 IsoClose        PROTO
 IsoEnumDir      PROTO :DWORD,:DWORD,:DWORD      ; pDirRec, pfnCallback(pRec, lParam) -> continue?, lParam

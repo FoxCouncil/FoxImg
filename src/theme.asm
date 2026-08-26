@@ -407,7 +407,10 @@ ThemeEraseBkgnd ENDP
 ; ---------------------------------------------------------------------------
 ThemeDrawStatus PROC USES esi pDIS:DWORD
     LOCAL rc:RECT
+    LOCAL pszText:DWORD
     mov esi, pDIS
+    invoke UiStatusText, [esi].DRAWITEMSTRUCT.itemID
+    mov pszText, eax
     invoke FillRect, [esi].DRAWITEMSTRUCT.hDC, addr [esi].DRAWITEMSTRUCT.rcItem, g_hbrStatus
     invoke SetBkMode, [esi].DRAWITEMSTRUCT.hDC, TRANSPARENT
     invoke SetTextColor, [esi].DRAWITEMSTRUCT.hDC, DARK_TEXT
@@ -421,7 +424,7 @@ ThemeDrawStatus PROC USES esi pDIS:DWORD
     mov rc.right, eax
     mov eax, [esi].DRAWITEMSTRUCT.rcItem.bottom
     mov rc.bottom, eax
-    invoke DrawTextW, [esi].DRAWITEMSTRUCT.hDC, offset g_szStatus, -1, addr rc, DT_SINGLELINE or DT_VCENTER or DT_NOPREFIX or DT_END_ELLIPSIS
+    invoke DrawTextW, [esi].DRAWITEMSTRUCT.hDC, pszText, -1, addr rc, DT_SINGLELINE or DT_VCENTER or DT_NOPREFIX or DT_END_ELLIPSIS
     mov eax, TRUE
     ret
 ThemeDrawStatus ENDP

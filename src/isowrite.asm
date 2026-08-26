@@ -649,8 +649,27 @@ AssignFileExtents PROC USES esi pDir:DWORD
     ret
 AssignFileExtents ENDP
 
+; Zero padding after cb bytes of data so the next write starts on a block boundary
+IsoWritePadTo PROC cb:DWORD
+    LOCAL pad:DWORD
+    mov eax, cb
+    neg eax
+    and eax, ISO_SECTOR - 1
+    mov pad, eax
+    invoke SecBegin
+    .IF pad != 0
+        invoke WriteAll, g_hOut, g_pSec, pad
+    .ENDIF
+    invoke SectorsFor, cb
+    add g_lba, eax
+    ret
+IsoWritePadTo ENDP
+
 AssignLayout PROC USES esi ebx
-    mov g_lba, 19
+    mov g_lba, 19                           ; PVD, SVD, terminator
+    .IF g_bootCount != 0
+        inc g_lba                           ; + Boot Record Volume Descriptor
+    .ENDIF
     mov eax, g_lba
     mov g_ptL, eax
     invoke SectorsFor, g_ptSize
@@ -667,6 +686,11 @@ AssignLayout PROC USES esi ebx
     mov g_ptMJ, eax
     invoke SectorsFor, g_ptSizeJ
     add g_lba, eax
+    .IF g_bootCount != 0
+        mov eax, g_lba
+        mov g_bootWCatalog, eax             ; one block for the boot catalog
+        inc g_lba
+    .ENDIF
 
     xor ebx, ebx
     .WHILE ebx < g_nDirs
@@ -691,6 +715,7 @@ AssignLayout PROC USES esi ebx
         inc ebx
     .ENDW
     invoke AssignFileExtents, g_pRootNode
+    invoke BootAssignLayout, offset g_lba   ; hidden boot images (entries not backed by a file)
     mov eax, g_lba
     mov g_totalSectors, eax
     ret
@@ -1099,12 +1124,22 @@ IsoWrite PROC USES esi ebx pszOutPath:DWORD
     mov g_lba, 0
     invoke WriteZeroSectors, 16
     invoke WriteVolumeDescriptor, FALSE
+    .IF g_bootCount != 0
+        invoke SecBegin
+        invoke BootBuildBRVD, g_pSec
+        invoke SecWrite
+    .ENDIF
     invoke WriteVolumeDescriptor, TRUE
     invoke WriteTerminator
     invoke WritePathTable, FALSE, FALSE
     invoke WritePathTable, FALSE, TRUE
     invoke WritePathTable, TRUE, FALSE
     invoke WritePathTable, TRUE, TRUE
+    .IF g_bootCount != 0
+        invoke SecBegin
+        invoke BootBuildCatalog, g_pSec
+        invoke SecWrite
+    .ENDIF
 
     xor ebx, ebx
     .WHILE ebx < g_nDirs
@@ -1121,6 +1156,10 @@ IsoWrite PROC USES esi ebx pszOutPath:DWORD
         inc ebx
     .ENDW
     invoke WriteFiles, g_pRootNode
+    .IF g_bootCount != 0 && g_fail == 0
+        invoke BootWriteBlobs
+        invoke BootPatchInfoTables
+    .ENDIF
 
     invoke CloseHandle, g_hOut
     mov g_hOut, 0

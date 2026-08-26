@@ -416,6 +416,79 @@ add_file:
 VfsAddHostPath ENDP
 
 ; ---------------------------------------------------------------------------
+; Lookup / move
+; ---------------------------------------------------------------------------
+VfsFindByExtent PROC USES esi pDir:DWORD, lba:DWORD
+    mov esi, pDir
+    .IF esi == 0
+        xor eax, eax
+        ret
+    .ENDIF
+    mov esi, [esi].NODE.pFirstChild
+    .WHILE esi != 0
+        test [esi].NODE.nflags, NF_DIR
+        .IF !ZERO?
+            invoke VfsFindByExtent, esi, lba
+            .IF eax != 0
+                ret
+            .ENDIF
+        .ELSEIF [esi].NODE.nflags & NF_ISO
+            mov eax, [esi].NODE.isoExtent
+            .IF eax == lba
+                mov eax, esi
+                ret
+            .ENDIF
+        .ENDIF
+        mov esi, [esi].NODE.pNextSibling
+    .ENDW
+    xor eax, eax
+    ret
+VfsFindByExtent ENDP
+
+VfsIsAncestor PROC pMaybeAncestor:DWORD, pNode:DWORD
+    mov eax, pNode
+    .WHILE eax != 0
+        .IF eax == pMaybeAncestor
+            mov eax, TRUE
+            ret
+        .ENDIF
+        mov eax, [eax].NODE.pParent
+    .ENDW
+    xor eax, eax
+    ret
+VfsIsAncestor ENDP
+
+; Re-parent a node; refuses cycles and name clashes
+VfsMove PROC USES esi pNode:DWORD, pNewParent:DWORD
+    mov esi, pNode
+    mov eax, pNewParent
+    .IF esi == 0 || eax == 0 || esi == g_pRootNode
+        xor eax, eax
+        ret
+    .ENDIF
+    .IF eax == [esi].NODE.pParent
+        xor eax, eax
+        ret
+    .ENDIF
+    invoke VfsIsAncestor, esi, pNewParent
+    .IF eax != 0
+        xor eax, eax
+        ret
+    .ENDIF
+    lea eax, [esi].NODE.szName
+    invoke VfsFindChild, pNewParent, eax
+    .IF eax != 0
+        xor eax, eax
+        ret
+    .ENDIF
+    invoke VfsUnlink, esi
+    invoke VfsLink, pNewParent, esi
+    mov g_bModified, TRUE
+    mov eax, TRUE
+    ret
+VfsMove ENDP
+
+; ---------------------------------------------------------------------------
 ; Data access
 ; ---------------------------------------------------------------------------
 WriteAll PROC USES esi ebx hFile:DWORD, pData:DWORD, cb:DWORD
@@ -463,15 +536,7 @@ VfsCopyData PROC USES esi ebx pNode:DWORD, hOut:DWORD
     mov esi, pNode
     mov eax, [esi].NODE.nflags
     .IF eax & NF_ISO
-        .IF [esi].NODE.dataSize == 0
-            mov eax, TRUE
-            ret
-        .ENDIF
-        invoke VfsIsoPointer, esi
-        .IF eax == 0
-            ret
-        .ENDIF
-        invoke WriteAll, hOut, eax, [esi].NODE.dataSize
+        invoke IsoCopyExtent, [esi].NODE.isoExtent, [esi].NODE.dataSize, hOut
         ret
     .ELSEIF eax & NF_HOST
         invoke CreateFileW, [esi].NODE.pszHost, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
@@ -533,11 +598,10 @@ VfsReadAll PROC USES esi edi pNode:DWORD, cbMax:DWORD, pcbOut:DWORD
 
     mov eax, [esi].NODE.nflags
     .IF eax & NF_ISO
-        invoke VfsIsoPointer, esi
+        invoke IsoReadExtent, [esi].NODE.isoExtent, cb, pBuf
         .IF eax == 0
             jmp fail
         .ENDIF
-        invoke RtlMoveMemory, pBuf, eax, cb
     .ELSEIF eax & NF_HOST
         invoke CreateFileW, [esi].NODE.pszHost, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
         .IF eax == INVALID_HANDLE_VALUE

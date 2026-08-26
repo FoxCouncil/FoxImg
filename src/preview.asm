@@ -82,6 +82,14 @@ IconViewProc PROC USES esi ebx hWnd:DWORD, uMsg:DWORD, wParam:DWORD, lParam:DWOR
     LOCAL zoom:DWORD
     LOCAL cxDraw:DWORD
     LOCAL cyDraw:DWORD
+    LOCAL totalW:DWORD
+    LOCAL totalH:DWORD
+    LOCAL gap:DWORD
+    LOCAL nRows:DWORD
+    LOCAL row:DWORD
+    LOCAL rowW[MAX_ICONS]:DWORD
+    LOCAL rowHt[MAX_ICONS]:DWORD
+    LOCAL rowStart[MAX_ICONS]:DWORD
 
     .IF uMsg == WM_ERASEBKGND
         mov eax, TRUE
@@ -120,9 +128,12 @@ IconViewProc PROC USES esi ebx hWnd:DWORD, uMsg:DWORD, wParam:DWORD, lParam:DWOR
         .ENDIF
         mov zoom, eax
 
+        ; Pass 1: break frames into rows (rowStart[r] = first frame index, rowW/rowHt = row extents), total height
         invoke Scale, 12
-        mov x, eax
-        mov y, eax
+        mov gap, eax
+        mov nRows, 0
+        mov totalH, 0
+        mov totalW, 0                       ; current row width
         mov rowH, 0
         xor ebx, ebx
         .WHILE ebx < g_nIcons
@@ -132,28 +143,107 @@ IconViewProc PROC USES esi ebx hWnd:DWORD, uMsg:DWORD, wParam:DWORD, lParam:DWOR
             mov eax, g_iconCy[ebx * 4]
             imul eax, zoom
             mov cyDraw, eax
-            ; wrap to the next row when the frame would overflow the width
-            mov eax, x
-            add eax, cxDraw
-            .IF eax > rc.right && x != 0
-                invoke Scale, 12
-                mov x, eax
-                mov eax, rowH
-                add y, eax
-                invoke Scale, 12
-                add y, eax
-                mov rowH, 0
+            ; start a new row when this frame will not fit (always place at least one frame per row)
+            mov eax, totalW
+            .IF eax != 0
+                add eax, gap
+                add eax, cxDraw
+                .IF eax > rc.right
+                    mov ecx, nRows
+                    mov eax, totalW
+                    mov rowW[ecx * 4], eax
+                    mov eax, rowH
+                    mov rowHt[ecx * 4], eax
+                    add totalH, eax
+                    mov eax, gap
+                    add totalH, eax
+                    inc nRows
+                    mov totalW, 0
+                    mov rowH, 0
+                .ENDIF
             .ENDIF
-            invoke DrawIconEx, ps.hdc, x, y, g_hIcons[ebx * 4], cxDraw, cyDraw, 0, NULL, DI_NORMAL
+            .IF totalW == 0
+                mov ecx, nRows
+                mov rowStart[ecx * 4], ebx
+            .ELSE
+                mov eax, gap
+                add totalW, eax
+            .ENDIF
             mov eax, cxDraw
-            add x, eax
-            invoke Scale, 12
-            add x, eax
+            add totalW, eax
             mov eax, cyDraw
             .IF eax > rowH
                 mov rowH, eax
             .ENDIF
             inc ebx
+        .ENDW
+        mov ecx, nRows
+        mov eax, totalW
+        mov rowW[ecx * 4], eax
+        mov eax, rowH
+        mov rowHt[ecx * 4], eax
+        add totalH, eax
+        inc nRows
+
+        ; Pass 2: draw, each row centred horizontally, the block centred vertically
+        mov eax, rc.bottom
+        .IF eax > totalH
+            sub eax, totalH
+            shr eax, 1
+        .ELSE
+            mov eax, gap
+        .ENDIF
+        mov y, eax
+        xor ebx, ebx
+        mov row, 0
+        .WHILE ebx < g_nIcons
+            mov ecx, row
+            mov eax, rowStart[ecx * 4]
+            .IF eax == ebx
+                mov eax, rc.right
+                .IF eax > rowW[ecx * 4]
+                    sub eax, rowW[ecx * 4]
+                    shr eax, 1
+                .ELSE
+                    mov eax, gap
+                .ENDIF
+                mov x, eax
+                .IF ebx != 0
+                    mov ecx, row
+                    dec ecx
+                    mov eax, rowHt[ecx * 4]
+                    add y, eax
+                    mov eax, gap
+                    add y, eax
+                .ENDIF
+            .ENDIF
+            mov eax, g_iconCx[ebx * 4]
+            imul eax, zoom
+            mov cxDraw, eax
+            mov eax, g_iconCy[ebx * 4]
+            imul eax, zoom
+            mov cyDraw, eax
+            ; vertical centre within the row
+            mov ecx, row
+            mov eax, rowHt[ecx * 4]
+            sub eax, cyDraw
+            shr eax, 1
+            add eax, y
+            invoke DrawIconEx, ps.hdc, x, eax, g_hIcons[ebx * 4], cxDraw, cyDraw, 0, NULL, DI_NORMAL
+            mov eax, cxDraw
+            add x, eax
+            mov eax, gap
+            add x, eax
+            inc ebx
+            ; advance the row when the next frame starts one
+            mov ecx, row
+            inc ecx
+            .IF ecx < nRows
+                mov eax, rowStart[ecx * 4]
+                .IF eax == ebx
+                    mov row, ecx
+                .ENDIF
+            .ENDIF
         .ENDW
         invoke EndPaint, hWnd, addr ps
         xor eax, eax

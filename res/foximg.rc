@@ -6,15 +6,17 @@
 #define IDM_EXIT        102
 #define IDM_SAVE        103
 #define IDM_SAVEAS      104
-#define IDM_EXPORT_FOLDER 105
-#define IDM_EXPORT_BINCUE 106
 #define IDM_ADDFILES    110
 #define IDM_NEWFOLDER   111
 #define IDM_NEWFILE     112
 #define IDM_RENAME      113
 #define IDM_DELETE      114
 #define IDM_EXTRACT     115
+#define IDM_EXTRACTALL  116
 #define IDM_PREVIEW     120
+#define IDM_BOOT_BIOS   130
+#define IDM_BOOT_EFI    131
+#define IDM_BOOT_CLEAR  132
 #define IDM_ABOUT       201
 
 #define IDI_APP         1
@@ -31,13 +33,7 @@ BEGIN
         MENUITEM "&Open Image...\tCtrl+O", IDM_OPEN
         MENUITEM SEPARATOR
         MENUITEM "&Save\tCtrl+S", IDM_SAVE
-        MENUITEM "Save &As...\tCtrl+Shift+S", IDM_SAVEAS
-        MENUITEM SEPARATOR
-        POPUP "&Export"
-        BEGIN
-            MENUITEM "To &Folder...", IDM_EXPORT_FOLDER
-            MENUITEM "To &BIN/CUE...", IDM_EXPORT_BINCUE
-        END
+        MENUITEM "Save &As / Convert...\tCtrl+Shift+S", IDM_SAVEAS
         MENUITEM SEPARATOR
         MENUITEM "E&xit", IDM_EXIT
     END
@@ -51,6 +47,14 @@ BEGIN
         MENUITEM "&Delete\tDel", IDM_DELETE
         MENUITEM SEPARATOR
         MENUITEM "&Extract Selected...", IDM_EXTRACT
+        MENUITEM "Extract A&ll...", IDM_EXTRACTALL
+    END
+    POPUP "&Boot"
+    BEGIN
+        MENUITEM "Use Selected File as &BIOS Boot Image", IDM_BOOT_BIOS
+        MENUITEM "Use Selected File as &UEFI Boot Image", IDM_BOOT_EFI
+        MENUITEM SEPARATOR
+        MENUITEM "&Remove All Boot Entries", IDM_BOOT_CLEAR
     END
     POPUP "&View"
     BEGIN
@@ -74,8 +78,8 @@ BEGIN
 END
 
 1 VERSIONINFO
-FILEVERSION     1,0,0,0
-PRODUCTVERSION  1,0,0,0
+FILEVERSION     1,1,0,0
+PRODUCTVERSION  1,1,0,0
 FILEOS          0x40004L
 FILETYPE        0x1L
 BEGIN
@@ -84,11 +88,11 @@ BEGIN
         BLOCK "040904B0"
         BEGIN
             VALUE "FileDescription",  "FoxImg disc image utility"
-            VALUE "FileVersion",      "1.0.0.0"
+            VALUE "FileVersion",      "1.1.0.0"
             VALUE "InternalName",     "FoxImg"
             VALUE "OriginalFilename", "FoxImg.exe"
             VALUE "ProductName",      "FoxImg"
-            VALUE "ProductVersion",   "1.0.0.0"
+            VALUE "ProductVersion",   "1.1.0.0"
         END
     END
     BLOCK "VarFileInfo"

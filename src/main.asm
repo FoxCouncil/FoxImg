@@ -9,34 +9,39 @@ g_hAccel    dd 0
 WSTR szClassName, <FoxImgMain>
 WSTR szTitle, <FoxImg>
 WSTR szOpenTitle, <Open Disc Image>
-WSTR szSaveTitle, <Save Image As>
-WSTR szExportBinTitle, <Export BIN/CUE>
+WSTR szSaveTitle, <Save As / Convert>
 WSTR szAddFilesTitle, <Add Files>
 WSTR szBrowseTitle, <Choose a destination folder>
 WSTR szErrOpen, <Could not open this image. It is not a readable ISO 9660 volume, or it is larger than 2 GB (not supported yet).>
 WSTR szErrWrite, <Writing the image failed. Check free space and that the destination is writable.>
 WSTR szErrReplace, <The image was written but the original could not be replaced.>
 WSTR szErrExtract, <Some files could not be extracted.>
+WSTR szErrBoot, <Select a file in the list first. Directories cannot be boot images.>
 WSTR szDiscard, <Discard unsaved changes?>
 WSTR szDeleteAsk, <Delete the selected items from the image?>
 WSTR szDeleteDirAsk, <Delete this folder and everything inside it?>
-WSTR szAboutText, <FoxImg v1.0 - a small native disc image utility. ISO 9660 / Joliet read, edit, write; BIN/CUE export.>
+WSTR szAboutText, <FoxImg v1.1 - a small native disc image utility. ISO 9660 / Joliet / El Torito; ISO, IMG, BIN/CUE.>
 WSTR szSaved, <Saved>
-WSTR szExported, <Exported>
+WSTR szExtracted, <Extracted>
 WSTR szExtIso, <iso>
-WSTR szExtBin, <bin>
+WSTR szExtCueDot, <.cue>
+WSTR szExtBinDot, <.bin>
 WSTR szTmpSuffix, <.tmp>
 WSTR szNewFolderName, <New Folder>
 WSTR szNewFileName, <New File>
 
-szFilterIso LABEL WORD
-    dw 'I','S','O',' ','I','m','a','g','e','s',' ','(','*','.','i','s','o',')',0
-    dw '*','.','i','s','o',0
+szFilterOpen LABEL WORD
+    dw 'D','i','s','c',' ','I','m','a','g','e','s',' ','(','*','.','i','s','o',';','*','.','i','m','g',';','*','.','b','i','n',';','*','.','c','u','e',')',0
+    dw '*','.','i','s','o',';','*','.','i','m','g',';','*','.','b','i','n',';','*','.','c','u','e',0
     dw 'A','l','l',' ','F','i','l','e','s',' ','(','*','.','*',')',0
     dw '*','.','*',0
     dw 0
-szFilterBin LABEL WORD
-    dw 'B','I','N',' ','I','m','a','g','e','s',' ','(','*','.','b','i','n',')',0
+szFilterSave LABEL WORD
+    dw 'I','S','O',' ','I','m','a','g','e',' ','(','*','.','i','s','o',')',0
+    dw '*','.','i','s','o',0
+    dw 'R','a','w',' ','I','m','a','g','e',' ','(','*','.','i','m','g',')',0
+    dw '*','.','i','m','g',0
+    dw 'B','I','N','/','C','U','E',' ','(','*','.','b','i','n',')',0
     dw '*','.','b','i','n',0
     dw 0
 szFilterAll LABEL WORD
@@ -58,6 +63,50 @@ g_szMulti   dw MULTI_BUF dup(?)
 .code
 
 ; ---------------------------------------------------------------------------
+; Path helpers
+; ---------------------------------------------------------------------------
+; Pointer to the extension (including '.') of the leaf, or to the terminating NUL when there is none
+PathExt PROC USES esi pszPath:DWORD
+    mov esi, pszPath
+    mov edx, 0
+    .WHILE word ptr [esi] != 0
+        .IF word ptr [esi] == '.'
+            mov edx, esi
+        .ELSEIF word ptr [esi] == '\'
+            mov edx, 0
+        .ENDIF
+        add esi, 2
+    .ENDW
+    .IF edx == 0
+        mov edx, esi
+    .ENDIF
+    mov eax, edx
+    ret
+PathExt ENDP
+
+; Pointer to the leaf name
+PathLeaf PROC USES esi pszPath:DWORD
+    mov esi, pszPath
+    mov eax, esi
+    .WHILE word ptr [esi] != 0
+        .IF word ptr [esi] == '\'
+            lea eax, [esi + 2]
+        .ENDIF
+        add esi, 2
+    .ENDW
+    ret
+PathLeaf ENDP
+
+; pszOut = pszPath with its extension replaced by pszNewExt (".cue")
+PathWithExt PROC pszOut:DWORD, pszPath:DWORD, pszNewExt:DWORD
+    invoke lstrcpynW, pszOut, pszPath, MAX_PATH - 8
+    invoke PathExt, pszOut
+    mov word ptr [eax], 0
+    invoke lstrcatW, pszOut, pszNewExt
+    ret
+PathWithExt ENDP
+
+; ---------------------------------------------------------------------------
 ; Dialog helpers
 ; ---------------------------------------------------------------------------
 ConfirmDiscard PROC
@@ -74,7 +123,6 @@ ConfirmDiscard PROC
     ret
 ConfirmDiscard ENDP
 
-; Save dialog into pszOut (MAX_PATH). Returns TRUE if a path was chosen.
 SaveDialog PROC pszOut:DWORD, pszFilter:DWORD, pszDefExt:DWORD, pszTitle:DWORD
     LOCAL ofn:OPENFILENAMEW
     invoke RtlZeroMemory, addr ofn, sizeof OPENFILENAMEW
@@ -129,24 +177,81 @@ OpenImage PROC pszPath:DWORD
         ret
     .ENDIF
     invoke VfsBuildFromIso
+    invoke BootParse
     invoke lstrcpynW, offset g_szPath, addr szLocal, MAX_PATH
     mov g_bHavePath, TRUE
     push g_pRootNode
     pop g_pCurDir
     invoke UiRefreshTree
+    invoke UiUpdateInfo
     invoke UiUpdateTitle
     mov eax, TRUE
     ret
 OpenImage ENDP
 
-; Write to <target>.tmp, swap it in, and reopen so every node is backed by the new file
+; Cue sheet next to a 2048-byte-sector data file
+WriteCueFile PROC USES esi edi pszCue:DWORD, pszBin:DWORD
+    LOCAL szText[512]:WORD
+    LOCAL szAscii[512]:BYTE
+    LOCAL hOut:DWORD
+    invoke PathLeaf, pszBin
+    invoke wsprintfW, addr szText, offset szCueFmt, eax
+    lea esi, szText
+    lea edi, szAscii
+    .WHILE word ptr [esi] != 0
+        movzx eax, word ptr [esi]
+        .IF eax > 127
+            mov eax, '?'
+        .ENDIF
+        mov [edi], al
+        inc edi
+        add esi, 2
+    .ENDW
+    lea eax, szAscii
+    sub edi, eax
+    invoke CreateFileW, pszCue, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL
+    .IF eax == INVALID_HANDLE_VALUE
+        xor eax, eax
+        ret
+    .ENDIF
+    mov hOut, eax
+    invoke WriteAll, hOut, addr szAscii, edi
+    invoke CloseHandle, hOut
+    mov eax, TRUE
+    ret
+WriteCueFile ENDP
+
+; Save / convert to pszTarget. Format follows the extension: .bin/.cue -> BIN + CUE, anything else -> ISO.
+; Writes <data>.tmp, swaps it in, and reopens so every node is backed by the new file.
 SaveTo PROC pszTarget:DWORD
     LOCAL szTarget[MAX_PATH]:WORD
+    LOCAL szData[MAX_PATH]:WORD
+    LOCAL szCue[MAX_PATH]:WORD
     LOCAL szTmp[MAX_PATH + 8]:WORD
+    LOCAL bCue:DWORD
 
     invoke lstrcpynW, addr szTarget, pszTarget, MAX_PATH
-    invoke wsprintfW, addr szTmp, offset szCatFmt, addr szTarget, offset szTmpSuffix
+    mov bCue, FALSE
+    invoke PathExt, addr szTarget
+    push eax
+    invoke lstrcmpiW, eax, offset szExtCueDot
+    pop ecx
+    .IF eax == 0
+        mov bCue, TRUE
+        invoke lstrcpynW, addr szCue, addr szTarget, MAX_PATH
+        invoke PathWithExt, addr szData, addr szTarget, offset szExtBinDot
+    .ELSE
+        invoke lstrcmpiW, ecx, offset szExtBinDot
+        .IF eax == 0
+            mov bCue, TRUE
+            invoke lstrcpynW, addr szData, addr szTarget, MAX_PATH
+            invoke PathWithExt, addr szCue, addr szTarget, offset szExtCueDot
+        .ELSE
+            invoke lstrcpynW, addr szData, addr szTarget, MAX_PATH
+        .ENDIF
+    .ENDIF
 
+    invoke wsprintfW, addr szTmp, offset szCatFmt, addr szData, offset szTmpSuffix
     invoke IsoWrite, addr szTmp
     .IF eax == 0
         invoke MessageBoxW, g_hWnd, offset szErrWrite, offset szTitle, MB_OK or MB_ICONERROR
@@ -155,18 +260,21 @@ SaveTo PROC pszTarget:DWORD
     .ENDIF
 
     invoke IsoClose                             ; release the mapping before replacing the file
-    invoke MoveFileExW, addr szTmp, addr szTarget, MOVEFILE_REPLACE_EXISTING
+    invoke MoveFileExW, addr szTmp, addr szData, MOVEFILE_REPLACE_EXISTING
     .IF eax == 0
         invoke MessageBoxW, g_hWnd, offset szErrReplace, offset szTitle, MB_OK or MB_ICONERROR
-        ; try to get the old image back into view
         .IF g_bHavePath != 0
             invoke OpenImage, offset g_szPath
         .ENDIF
         xor eax, eax
         ret
     .ENDIF
-
-    invoke OpenImage, addr szTarget
+    .IF bCue != 0
+        invoke WriteCueFile, addr szCue, addr szData
+        invoke OpenImage, addr szCue
+    .ELSE
+        invoke OpenImage, addr szData
+    .ENDIF
     invoke UiSetStatus, offset szSaved
     mov eax, TRUE
     ret
@@ -177,13 +285,11 @@ SaveTo ENDP
 ; ---------------------------------------------------------------------------
 ExtractCb PROC pNode:DWORD, lParam:DWORD
     invoke VfsExtract, pNode, lParam
-    .IF eax == 0
-        mov eax, lParam
-    .ENDIF
     ret
 ExtractCb ENDP
 
 DeleteCb PROC pNode:DWORD, lParam:DWORD
+    invoke BootForgetNode, pNode
     invoke VfsDelete, pNode
     ret
 DeleteCb ENDP
@@ -194,11 +300,13 @@ CmdNew PROC
         ret
     .ENDIF
     invoke IsoClose
+    mov g_bootCount, 0
     invoke VfsNewImage
     mov g_bHavePath, FALSE
     push g_pRootNode
     pop g_pCurDir
     invoke UiRefreshTree
+    invoke UiUpdateInfo
     invoke UiUpdateTitle
     ret
 CmdNew ENDP
@@ -215,7 +323,7 @@ CmdOpen PROC
     mov ofn.lStructSize, sizeof OPENFILENAMEW
     push g_hWnd
     pop ofn.hwndOwner
-    mov ofn.lpstrFilter, offset szFilterIso
+    mov ofn.lpstrFilter, offset szFilterOpen
     mov ofn.nFilterIndex, 1
     lea eax, szFile
     mov ofn.lpstrFile, eax
@@ -235,7 +343,7 @@ CmdSaveAs PROC
     .IF g_bHavePath != 0
         invoke lstrcpynW, addr szFile, offset g_szPath, MAX_PATH
     .ENDIF
-    invoke SaveDialog, addr szFile, offset szFilterIso, offset szExtIso, offset szSaveTitle
+    invoke SaveDialog, addr szFile, offset szFilterSave, offset szExtIso, offset szSaveTitle
     .IF eax != 0
         invoke SaveTo, addr szFile
     .ENDIF
@@ -251,7 +359,7 @@ CmdSave PROC
     ret
 CmdSave ENDP
 
-CmdExportFolder PROC USES esi
+CmdExtractAll PROC USES esi
     LOCAL szDir[MAX_PATH]:WORD
     LOCAL ok:DWORD
     .IF g_pRootNode == 0
@@ -274,91 +382,9 @@ CmdExportFolder PROC USES esi
     .IF ok == 0
         invoke MessageBoxW, g_hWnd, offset szErrExtract, offset szTitle, MB_OK or MB_ICONWARNING
     .ENDIF
-    invoke UiSetStatus, offset szExported
+    invoke UiSetStatus, offset szExtracted
     ret
-CmdExportFolder ENDP
-
-; A raw 2048-byte-sector image is exactly what a MODE1/2048 cue sheet describes
-CmdExportBinCue PROC USES esi edi
-    LOCAL szBin[MAX_PATH]:WORD
-    LOCAL szCue[MAX_PATH]:WORD
-    LOCAL szText[512]:WORD
-    LOCAL szAscii[512]:BYTE
-    LOCAL hOut:DWORD
-    LOCAL pLeaf:DWORD
-
-    mov szBin[0], 0
-    invoke SaveDialog, addr szBin, offset szFilterBin, offset szExtBin, offset szExportBinTitle
-    .IF eax == 0
-        ret
-    .ENDIF
-    .IF g_bHavePath != 0
-        invoke lstrcmpiW, addr szBin, offset g_szPath
-        .IF eax == 0
-            ret                             ; refuse to overwrite the image we are reading from
-        .ENDIF
-    .ENDIF
-    invoke IsoWrite, addr szBin
-    .IF eax == 0
-        invoke MessageBoxW, g_hWnd, offset szErrWrite, offset szTitle, MB_OK or MB_ICONERROR
-        ret
-    .ENDIF
-
-    ; cue path: swap the extension; leaf name for the FILE line
-    invoke lstrcpynW, addr szCue, addr szBin, MAX_PATH
-    lea esi, szCue
-    mov edi, esi
-    mov pLeaf, esi
-    .WHILE word ptr [esi] != 0
-        .IF word ptr [esi] == '.'
-            mov edi, esi
-        .ELSEIF word ptr [esi] == '\'
-            mov pLeaf, esi
-            add pLeaf, 2
-            mov edi, 0
-        .ENDIF
-        add esi, 2
-    .ENDW
-    .IF edi == 0
-        mov edi, esi
-    .ENDIF
-    mov word ptr [edi], '.'
-    mov word ptr [edi + 2], 'c'
-    mov word ptr [edi + 4], 'u'
-    mov word ptr [edi + 6], 'e'
-    mov word ptr [edi + 8], 0
-
-    ; leaf of the .bin: same offset into szBin as pLeaf has into szCue
-    mov ecx, pLeaf
-    lea edx, szCue
-    sub ecx, edx
-    lea eax, szBin
-    add eax, ecx
-    invoke wsprintfW, addr szText, offset szCueFmt, eax
-
-    ; narrow to ASCII
-    lea esi, szText
-    lea edi, szAscii
-    .WHILE word ptr [esi] != 0
-        movzx eax, word ptr [esi]
-        .IF eax > 127
-            mov eax, '?'
-        .ENDIF
-        mov [edi], al
-        inc edi
-        add esi, 2
-    .ENDW
-    lea eax, szAscii
-    sub edi, eax
-    invoke CreateFileW, addr szCue, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL
-    .IF eax != INVALID_HANDLE_VALUE
-        mov hOut, eax
-        invoke WriteAll, hOut, addr szAscii, edi
-        invoke CloseHandle, hOut
-    .ENDIF
-    invoke UiSetStatus, offset szExported
-    ret
-CmdExportBinCue ENDP
+CmdExtractAll ENDP
 
 CmdAddFiles PROC USES esi edi
     LOCAL ofn:OPENFILENAMEW
@@ -370,7 +396,6 @@ CmdAddFiles PROC USES esi edi
         ret
     .ENDIF
     mov pDir, eax
-
     mov g_szMulti[0], 0
     invoke RtlZeroMemory, addr ofn, sizeof OPENFILENAMEW
     mov ofn.lStructSize, sizeof OPENFILENAMEW
@@ -386,8 +411,6 @@ CmdAddFiles PROC USES esi edi
     .IF eax == 0
         ret
     .ENDIF
-
-    ; multi-select layout: "dir\0name\0name\0\0"; single: "fullpath\0\0"
     mov esi, offset g_szMulti
     invoke lstrlenW, esi
     lea edi, [esi + eax * 2 + 2]
@@ -408,13 +431,11 @@ CmdAddFiles PROC USES esi edi
     ret
 CmdAddFiles ENDP
 
-; New folder / file in the context directory, then in-place rename
 CmdNewNode PROC bDir:DWORD
     LOCAL szName[NODE_NAME_MAX]:WORD
     LOCAL pDir:DWORD
     LOCAL pNode:DWORD
     LOCAL nflags:DWORD
-
     invoke UiCtxDir
     .IF eax == 0
         ret
@@ -457,7 +478,7 @@ CmdDelete PROC
         mov eax, g_pCurDir
         mov ecx, [eax].NODE.pParent
         mov pDir, ecx
-        invoke VfsDelete, eax
+        invoke DeleteCb, eax, 0
         mov eax, pDir
         mov g_pCurDir, eax
     .ELSE
@@ -472,6 +493,7 @@ CmdDelete PROC
         invoke UiForEachSelected, offset DeleteCb, 0
     .ENDIF
     invoke UiRefreshTree
+    invoke UiUpdateInfo
     invoke UiUpdateTitle
     ret
 CmdDelete ENDP
@@ -495,7 +517,7 @@ CmdExtract PROC
     .ELSE
         invoke UiForEachSelected, offset ExtractCb, addr szDir
     .ENDIF
-    invoke UiSetStatus, offset szExported
+    invoke UiSetStatus, offset szExtracted
     ret
 CmdExtract ENDP
 
@@ -510,6 +532,20 @@ CmdOpenDir PROC
     ret
 CmdOpenDir ENDP
 
+CmdBoot PROC platform:DWORD
+    invoke UiSelectedNode
+    .IF eax != 0
+        invoke BootSetEntry, eax, platform
+    .ENDIF
+    .IF eax == 0
+        invoke MessageBoxW, g_hWnd, offset szErrBoot, offset szTitle, MB_OK or MB_ICONINFORMATION
+        ret
+    .ENDIF
+    invoke UiUpdateInfo
+    invoke UiUpdateTitle
+    ret
+CmdBoot ENDP
+
 AppCommand PROC id:DWORD
     mov eax, id
     .IF eax == IDM_NEW
@@ -520,10 +556,8 @@ AppCommand PROC id:DWORD
         invoke CmdSave
     .ELSEIF eax == IDM_SAVEAS
         invoke CmdSaveAs
-    .ELSEIF eax == IDM_EXPORT_FOLDER
-        invoke CmdExportFolder
-    .ELSEIF eax == IDM_EXPORT_BINCUE
-        invoke CmdExportBinCue
+    .ELSEIF eax == IDM_EXTRACTALL
+        invoke CmdExtractAll
     .ELSEIF eax == IDM_ADDFILES
         invoke CmdAddFiles
     .ELSEIF eax == IDM_NEWFOLDER
@@ -541,6 +575,14 @@ AppCommand PROC id:DWORD
         invoke CmdExtract
     .ELSEIF eax == IDM_OPENDIR
         invoke CmdOpenDir
+    .ELSEIF eax == IDM_BOOT_BIOS
+        invoke CmdBoot, BOOT_PLATFORM_X86
+    .ELSEIF eax == IDM_BOOT_EFI
+        invoke CmdBoot, BOOT_PLATFORM_EFI
+    .ELSEIF eax == IDM_BOOT_CLEAR
+        invoke BootClear
+        invoke UiUpdateInfo
+        invoke UiUpdateTitle
     .ELSEIF eax == IDM_PREVIEW
         xor g_bPreview, 1
         invoke UiLayout, g_hWnd
@@ -548,6 +590,7 @@ AppCommand PROC id:DWORD
         invoke PreviewShow, eax
     .ELSEIF eax == IDM_REFRESH
         invoke UiRefreshTree
+        invoke UiUpdateInfo
         invoke UiUpdateTitle
     .ELSEIF eax == IDM_EXIT
         invoke SendMessageW, g_hWnd, WM_CLOSE, 0, 0
@@ -611,6 +654,7 @@ WndProc PROC hWnd:DWORD, uMsg:DWORD, wParam:DWORD, lParam:DWORD
     .IF eax == WM_CREATE
         invoke UiCreateControls, hWnd
         invoke ThemeApply, hWnd
+        invoke DndInit
     .ELSEIF eax == WM_SIZE
         invoke UiLayout, hWnd
     .ELSEIF eax == WM_ERASEBKGND
@@ -686,6 +730,7 @@ WndProc PROC hWnd:DWORD, uMsg:DWORD, wParam:DWORD, lParam:DWORD
             invoke DestroyWindow, hWnd
         .ENDIF
     .ELSEIF eax == WM_DESTROY
+        invoke DndShutdown
         invoke IsoClose
         invoke PostQuitMessage, 0
     .ELSE
@@ -711,7 +756,7 @@ start PROC
     invoke GetModuleHandleW, NULL
     mov g_hInst, eax
     invoke VfsInit
-    invoke CoInitialize, NULL
+    invoke DndInit                              ; OleInitialize (targets are registered once the controls exist)
 
     mov icc.dwSize, sizeof INITCOMMONCONTROLSEX
     mov icc.dwICC, ICC_LISTVIEW_CLASSES or ICC_TREEVIEW_CLASSES or ICC_BAR_CLASSES
@@ -752,7 +797,6 @@ start PROC
 
     invoke CreateWindowExW, 0, offset szClassName, offset szTitle, WS_OVERLAPPEDWINDOW or WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, cxInit, cyInit, NULL, hMenu, g_hInst, NULL
     mov g_hWnd, eax
-    invoke DragAcceptFiles, g_hWnd, TRUE
     invoke ShowWindow, g_hWnd, SW_SHOWDEFAULT
     invoke UpdateWindow, g_hWnd
 

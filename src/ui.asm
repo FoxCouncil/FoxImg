@@ -49,29 +49,84 @@ szTitleFmt  dw 'F','o','x','I','m','g',' ','-',' ','%','s',0
 szTitleModFmt dw 'F','o','x','I','m','g',' ','-',' ','%','s',' ','*',0
 
 .data?
-g_szStatus  dw STATUS_MAX dup(?)
+g_szStatus  dw STATUS_MAX dup(?)            ; part 0: items / last action
+g_szStatusBoot dw STATUS_MAX dup(?)         ; part 1: El Torito summary
+g_szStatusFmt dw STATUS_MAX dup(?)          ; part 2: format and size
 g_szPath    dw MAX_PATH dup(?)
 g_szTitle   dw MAX_PATH + 16 dup(?)
+
+.data
+g_statusParts dd 0, 0, -1
+WSTR szNewImageFmt, <New image>
+szSizeFmt   dw '%','s',' ',' ','%','u',' ','K','B',' ','(','%','u',' ','b','l','o','c','k','s',')',0
 
 .code
 
 UiAddDirChildren PROTO :DWORD, :DWORD
 
 ; ---------------------------------------------------------------------------
-; Status / title
+; Status bar (three parts) / title
 ; ---------------------------------------------------------------------------
-UiSetStatus PROC pszText:DWORD
-    mov eax, pszText
-    .IF eax != offset g_szStatus
-        invoke lstrcpynW, offset g_szStatus, pszText, STATUS_MAX
-    .ENDIF
-    .IF g_bDark != 0
-        invoke SendMessageW, g_hStatus, SB_SETTEXTW, SBT_OWNERDRAW, offset g_szStatus
+UiStatusText PROC part:DWORD
+    mov eax, part
+    .IF eax == 1
+        mov eax, offset g_szStatusBoot
+    .ELSEIF eax == 2
+        mov eax, offset g_szStatusFmt
     .ELSE
-        invoke SendMessageW, g_hStatus, SB_SETTEXTW, 0, offset g_szStatus
+        mov eax, offset g_szStatus
     .ENDIF
     ret
+UiStatusText ENDP
+
+UiSetStatusPart PROC part:DWORD, pszText:DWORD
+    LOCAL pBuf:DWORD
+    invoke UiStatusText, part
+    mov pBuf, eax
+    .IF eax != pszText
+        invoke lstrcpynW, pBuf, pszText, STATUS_MAX
+    .ENDIF
+    mov eax, part
+    .IF g_bDark != 0
+        or eax, SBT_OWNERDRAW
+    .ENDIF
+    invoke SendMessageW, g_hStatus, SB_SETTEXTW, eax, pBuf
+    ret
+UiSetStatusPart ENDP
+
+UiSetStatus PROC pszText:DWORD
+    invoke UiSetStatusPart, 0, pszText
+    ret
 UiSetStatus ENDP
+
+UiSetStatusParts PROC
+    invoke Scale, 180
+    mov g_statusParts[0], eax
+    invoke Scale, 640
+    add eax, g_statusParts[0]
+    mov g_statusParts[4], eax
+    mov g_statusParts[8], -1
+    invoke SendMessageW, g_hStatus, SB_SETPARTS, STATUS_PARTS, offset g_statusParts
+    ret
+UiSetStatusParts ENDP
+
+; Format + size and boot summary parts
+UiUpdateInfo PROC
+    LOCAL szFmt[64]:WORD
+    LOCAL szText[STATUS_MAX]:WORD
+    .IF g_pView == 0
+        invoke lstrcpyW, addr szText, offset szNewImageFmt
+    .ELSE
+        invoke IsoFormatName, addr szFmt
+        mov eax, g_cbView
+        shr eax, 10
+        invoke wsprintfW, addr szText, offset szSizeFmt, addr szFmt, eax, g_nSectors
+    .ENDIF
+    invoke UiSetStatusPart, 2, addr szText
+    invoke BootSummary, addr szText
+    invoke UiSetStatusPart, 1, addr szText
+    ret
+UiUpdateInfo ENDP
 
 UiUpdateTitle PROC
     mov eax, offset szUntitled
@@ -122,6 +177,7 @@ UiUpdateDpi PROC USES ebx hParent:DWORD, dpi:DWORD
     invoke SendMessageW, g_hTree, WM_SETFONT, g_hFont, TRUE
     invoke SendMessageW, g_hList, WM_SETFONT, g_hFont, TRUE
     invoke SendMessageW, g_hStatus, WM_SETFONT, g_hFont, TRUE
+    invoke UiSetStatusParts
     invoke PreviewSetFont
 
     xor ebx, ebx
@@ -160,7 +216,6 @@ UiCreateControls PROC hParent:DWORD
     invoke CreateWindowExW, WS_EX_CLIENTEDGE, offset szListClass, NULL, WS_CHILD or WS_VISIBLE or LVS_REPORT or LVS_SHOWSELALWAYS or LVS_EDITLABELS, 0, 0, 0, 0, hParent, IDC_LIST, g_hInst, NULL
     mov g_hList, eax
     invoke SendMessageW, g_hList, LVM_SETEXTENDEDLISTVIEWSTYLE, LVS_EX_FULLROWSELECT, LVS_EX_FULLROWSELECT
-    invoke DragAcceptFiles, g_hList, TRUE
 
     invoke AddColumn, 0, offset szColName, 0, LVCFMT_LEFT
     invoke AddColumn, 1, offset szColSize, 0, LVCFMT_RIGHT
@@ -514,6 +569,10 @@ UiOnNotify PROC USES esi edi pNMHDR:DWORD
             .IF eax != 0
                 invoke UiFillListNode, eax
             .ENDIF
+        .ELSEIF ecx == TVN_BEGINDRAGW
+            mov eax, [esi].NMTREEVIEWW.itemNew.hItem
+            invoke SendMessageW, g_hTree, TVM_SELECTITEM, TVGN_CARET, eax
+            invoke DndBeginDrag, TRUE
         .ENDIF
         xor eax, eax
         ret
@@ -524,7 +583,9 @@ UiOnNotify PROC USES esi edi pNMHDR:DWORD
         ret
     .ENDIF
 
-    .IF ecx == NM_DBLCLK
+    .IF ecx == LVN_BEGINDRAG
+        invoke DndBeginDrag, FALSE
+    .ELSEIF ecx == NM_DBLCLK
         invoke AppCommand, IDM_OPENDIR
     .ELSEIF ecx == LVN_ITEMCHANGED
         mov eax, [esi].NMLISTVIEW.uNewState
@@ -706,7 +767,50 @@ UiContextMenu PROC USES ebx hwndFrom:DWORD, xScreen:DWORD, yScreen:DWORD
 UiContextMenu ENDP
 
 ; ---------------------------------------------------------------------------
-; Drag and drop from Explorer: add into the current directory
+; Hit testing for drop targets
+; ---------------------------------------------------------------------------
+UiListNodeAt PROC x:DWORD, y:DWORD
+    LOCAL lvht:LVHITTESTINFO
+    mov eax, x
+    mov lvht.pt.x, eax
+    mov eax, y
+    mov lvht.pt.y, eax
+    invoke SendMessageW, g_hList, LVM_HITTEST, 0, addr lvht
+    .IF eax == -1
+        xor eax, eax
+        ret
+    .ENDIF
+    invoke UiListItemNode, eax
+    ret
+UiListNodeAt ENDP
+
+; Directory node under a tree point; optionally moves the drop highlight there
+UiTreeNodeAt PROC x:DWORD, y:DWORD, bHilite:DWORD
+    LOCAL tvht:TVHITTESTINFO
+    LOCAL tvi:TVITEMW
+    mov eax, x
+    mov tvht.pt.x, eax
+    mov eax, y
+    mov tvht.pt.y, eax
+    invoke SendMessageW, g_hTree, TVM_HITTEST, 0, addr tvht
+    .IF bHilite != 0
+        invoke SendMessageW, g_hTree, TVM_SELECTITEM, TVGN_DROPHILITE, tvht.hItem
+    .ENDIF
+    .IF tvht.hItem == 0
+        xor eax, eax
+        ret
+    .ENDIF
+    mov tvi.imask, TVIF_PARAM or TVIF_HANDLE
+    push tvht.hItem
+    pop tvi.hItem
+    mov tvi.lParam, 0
+    invoke SendMessageW, g_hTree, TVM_GETITEMW, 0, addr tvi
+    mov eax, tvi.lParam
+    ret
+UiTreeNodeAt ENDP
+
+; ---------------------------------------------------------------------------
+; Drag and drop from Explorer (WM_DROPFILES fallback): add into the current directory
 ; ---------------------------------------------------------------------------
 UiOnDropFiles PROC USES ebx hDrop:DWORD
     LOCAL szFile[MAX_PATH]:WORD
