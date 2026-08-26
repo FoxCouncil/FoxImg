@@ -1,8 +1,20 @@
 // FoxImg resources - IDs must match src\foximg.inc
 #define IDR_MAINMENU    1
 #define IDR_ACCEL       1
+#define IDM_NEW         100
 #define IDM_OPEN        101
 #define IDM_EXIT        102
+#define IDM_SAVE        103
+#define IDM_SAVEAS      104
+#define IDM_EXPORT_FOLDER 105
+#define IDM_EXPORT_BINCUE 106
+#define IDM_ADDFILES    110
+#define IDM_NEWFOLDER   111
+#define IDM_NEWFILE     112
+#define IDM_RENAME      113
+#define IDM_DELETE      114
+#define IDM_EXTRACT     115
+#define IDM_PREVIEW     120
 #define IDM_ABOUT       201
 
 #define IDI_APP         1
@@ -15,9 +27,34 @@ IDR_MAINMENU MENU
 BEGIN
     POPUP "&File"
     BEGIN
+        MENUITEM "&New Image\tCtrl+N", IDM_NEW
         MENUITEM "&Open Image...\tCtrl+O", IDM_OPEN
         MENUITEM SEPARATOR
+        MENUITEM "&Save\tCtrl+S", IDM_SAVE
+        MENUITEM "Save &As...\tCtrl+Shift+S", IDM_SAVEAS
+        MENUITEM SEPARATOR
+        POPUP "&Export"
+        BEGIN
+            MENUITEM "To &Folder...", IDM_EXPORT_FOLDER
+            MENUITEM "To &BIN/CUE...", IDM_EXPORT_BINCUE
+        END
+        MENUITEM SEPARATOR
         MENUITEM "E&xit", IDM_EXIT
+    END
+    POPUP "&Edit"
+    BEGIN
+        MENUITEM "&Add Files...\tIns", IDM_ADDFILES
+        MENUITEM "New &Folder\tCtrl+Shift+N", IDM_NEWFOLDER
+        MENUITEM "New F&ile", IDM_NEWFILE
+        MENUITEM SEPARATOR
+        MENUITEM "&Rename\tF2", IDM_RENAME
+        MENUITEM "&Delete\tDel", IDM_DELETE
+        MENUITEM SEPARATOR
+        MENUITEM "&Extract Selected...", IDM_EXTRACT
+    END
+    POPUP "&View"
+    BEGIN
+        MENUITEM "&Preview Pane\tCtrl+P", IDM_PREVIEW
     END
     POPUP "&Help"
     BEGIN
@@ -27,12 +64,18 @@ END
 
 IDR_ACCEL ACCELERATORS
 BEGIN
+    "N", IDM_NEW, VIRTKEY, CONTROL
     "O", IDM_OPEN, VIRTKEY, CONTROL
+    "S", IDM_SAVE, VIRTKEY, CONTROL
+    "S", IDM_SAVEAS, VIRTKEY, CONTROL, SHIFT
+    "N", IDM_NEWFOLDER, VIRTKEY, CONTROL, SHIFT
+    "P", IDM_PREVIEW, VIRTKEY, CONTROL
+    0x2D, IDM_ADDFILES, VIRTKEY         // VK_INSERT
 END
 
 1 VERSIONINFO
-FILEVERSION     0,1,0,0
-PRODUCTVERSION  0,1,0,0
+FILEVERSION     1,0,0,0
+PRODUCTVERSION  1,0,0,0
 FILEOS          0x40004L
 FILETYPE        0x1L
 BEGIN
@@ -41,11 +84,11 @@ BEGIN
         BLOCK "040904B0"
         BEGIN
             VALUE "FileDescription",  "FoxImg disc image utility"
-            VALUE "FileVersion",      "0.1.0.0"
+            VALUE "FileVersion",      "1.0.0.0"
             VALUE "InternalName",     "FoxImg"
             VALUE "OriginalFilename", "FoxImg.exe"
             VALUE "ProductName",      "FoxImg"
-            VALUE "ProductVersion",   "0.1.0.0"
+            VALUE "ProductVersion",   "1.0.0.0"
         END
     END
     BLOCK "VarFileInfo"

@@ -1,5 +1,6 @@
 @echo off
 setlocal enabledelayedexpansion
+pushd "%~dp0"
 
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 if not exist "!VSWHERE!" echo vswhere.exe not found - install Visual Studio Build Tools. && exit /b 1
@@ -20,12 +21,14 @@ if /i "%1"=="debug" (
 
 if not exist build mkdir build
 
-for %%f in (main ui iso9660 theme) do (
+set OBJS=
+for %%f in (main ui iso9660 theme vfs isowrite preview) do (
     ml %MLFLAGS% /Fo build\%%f.obj src\%%f.asm || exit /b 1
+    set OBJS=!OBJS! build\%%f.obj
 )
 
 rc /nologo /fo build\foximg.res res\foximg.rc || exit /b 1
 
-link %LINKFLAGS% /OUT:build\FoxImg.exe build\main.obj build\ui.obj build\iso9660.obj build\theme.obj build\foximg.res || exit /b 1
+link %LINKFLAGS% /OUT:build\FoxImg.exe %OBJS% build\foximg.res || exit /b 1
 
 for %%f in (build\FoxImg.exe) do echo Built %%f (%%~zf bytes)

@@ -571,6 +571,335 @@ EXTERNDEF g_dpi:DWORD
 EXTERNDEF g_szStatus:WORD
 
 ; ---------------------------------------------------------------------------
+; v1 feature set: model, writer, preview, editing UI
+; ---------------------------------------------------------------------------
+includelib shell32.lib
+includelib ole32.lib
+
+FOXIMG_VERSION_TEXT     equ <FoxImg v1.0>
+
+WM_SETFOCUS             equ 0007h
+WM_KILLFOCUS            equ 0008h
+WM_SETTEXT              equ 000Ch
+WM_PAINT                equ 000Fh
+WM_CONTEXTMENU          equ 007Bh
+WM_KEYDOWN              equ 0100h
+WM_CTLCOLOREDIT         equ 0133h
+WM_CTLCOLORSTATIC       equ 0138h
+WM_DROPFILES            equ 0233h
+WM_INITMENUPOPUP        equ 0117h
+
+WS_HSCROLL              equ 00100000h
+WS_VSCROLL              equ 00200000h
+WS_CLIPCHILDREN         equ 02000000h
+ES_MULTILINE            equ 0004h
+ES_AUTOVSCROLL          equ 0040h
+ES_AUTOHSCROLL          equ 0080h
+ES_READONLY             equ 0800h
+SW_HIDE                 equ 0
+SW_SHOW                 equ 5
+
+TPM_RIGHTBUTTON         equ 0002h
+TPM_RETURNCMD           equ 0100h
+MF_STRING               equ 0000h
+MF_GRAYED               equ 0001h
+MF_POPUP                equ 0010h
+MF_SEPARATOR            equ 0800h
+MF_BYCOMMAND            equ 0000h
+MF_CHECKED              equ 0008h
+MF_UNCHECKED            equ 0000h
+
+MB_YESNO                equ 0004h
+MB_ICONQUESTION         equ 0020h
+MB_ICONWARNING          equ 0030h
+IDYES                   equ 6
+
+VK_RETURN               equ 0Dh
+VK_DELETE               equ 2Eh
+VK_F2                   equ 71h
+
+OFN_OVERWRITEPROMPT     equ 0002h
+BIF_RETURNONLYFSDIRS    equ 0001h
+BIF_NEWDIALOGSTYLE      equ 0040h
+HEAP_ZERO_MEMORY        equ 0008h
+MOVEFILE_REPLACE_EXISTING equ 0001h
+FILE_ATTRIBUTE_DIRECTORY equ 0010h
+INVALID_FILE_ATTRIBUTES equ 0FFFFFFFFh
+GENERIC_WRITE           equ 40000000h
+CREATE_ALWAYS           equ 2
+FILE_BEGIN              equ 0
+DI_NORMAL               equ 0003h
+CP_ACP                  equ 0
+CP_UTF8                 equ 65001
+MB_ERR_INVALID_CHARS    equ 0008h
+
+LVS_SINGLESEL           equ 0004h
+LVS_EDITLABELS          equ 0200h
+LVIF_STATE              equ 0008h
+LVIS_SELECTED           equ 0002h
+LVNI_SELECTED           equ 0002h
+LVM_GETITEMCOUNT        equ LVM_FIRST + 4
+LVM_DELETEITEM          equ LVM_FIRST + 8
+LVM_GETNEXTITEM         equ LVM_FIRST + 12
+LVM_HITTEST             equ LVM_FIRST + 18
+LVM_ENSUREVISIBLE       equ LVM_FIRST + 19
+LVM_GETEDITCONTROL      equ LVM_FIRST + 24
+LVM_SETITEMSTATE        equ LVM_FIRST + 43
+LVM_GETSELECTEDCOUNT    equ LVM_FIRST + 50
+LVM_GETITEMW            equ LVM_FIRST + 75
+LVM_SETITEMW            equ LVM_FIRST + 76
+LVM_EDITLABELW          equ LVM_FIRST + 118
+LVHT_ONITEM             equ 000Eh
+LVN_FIRST               equ -100
+LVN_ITEMCHANGED         equ LVN_FIRST - 1
+LVN_KEYDOWN             equ LVN_FIRST - 55
+LVN_BEGINLABELEDITW     equ LVN_FIRST - 75
+LVN_ENDLABELEDITW       equ LVN_FIRST - 76
+NM_DBLCLK               equ -3
+NM_RCLICK               equ -5
+TVM_GETNEXTITEM         equ TV_FIRST + 10
+TVM_HITTEST             equ TV_FIRST + 17
+TVGN_ROOT               equ 0
+TVHT_ONITEM             equ 0046h
+
+LVHITTESTINFO STRUCT
+    pt          POINT <>
+    flags       DWORD ?
+    iItem       DWORD ?
+    iSubItem    DWORD ?
+    iGroup      DWORD ?
+LVHITTESTINFO ENDS
+
+TVHITTESTINFO STRUCT
+    pt          POINT <>
+    flags       DWORD ?
+    hItem       DWORD ?
+TVHITTESTINFO ENDS
+
+NMLISTVIEW STRUCT
+    hdr         NMHDR <>
+    iItem       DWORD ?
+    iSubItem    DWORD ?
+    uNewState   DWORD ?
+    uOldState   DWORD ?
+    uChanged    DWORD ?
+    ptAction    POINT <>
+    lParam      DWORD ?
+NMLISTVIEW ENDS
+
+NMLVDISPINFOW STRUCT
+    hdr         NMHDR <>
+    item        LVITEMW <>
+NMLVDISPINFOW ENDS
+
+NMLVKEYDOWN STRUCT
+    hdr         NMHDR <>
+    wVKey       WORD ?
+    wPad        WORD ?
+    flags       DWORD ?
+NMLVKEYDOWN ENDS
+
+PAINTSTRUCT STRUCT
+    hdc         DWORD ?
+    fErase      DWORD ?
+    rcPaint     RECT <>
+    fRestore    DWORD ?
+    fIncUpdate  DWORD ?
+    rgbReserved BYTE 32 dup(?)
+PAINTSTRUCT ENDS
+
+FILETIME STRUCT
+    dwLowDateTime   DWORD ?
+    dwHighDateTime  DWORD ?
+FILETIME ENDS
+
+SYSTEMTIME STRUCT
+    wYear           WORD ?
+    wMonth          WORD ?
+    wDayOfWeek      WORD ?
+    wDay            WORD ?
+    wHour           WORD ?
+    wMinute         WORD ?
+    wSecond         WORD ?
+    wMilliseconds   WORD ?
+SYSTEMTIME ENDS
+
+WIN32_FIND_DATAW STRUCT
+    dwFileAttributes    DWORD ?
+    ftCreationTime      FILETIME <>
+    ftLastAccessTime    FILETIME <>
+    ftLastWriteTime     FILETIME <>
+    nFileSizeHigh       DWORD ?
+    nFileSizeLow        DWORD ?
+    dwReserved0         DWORD ?
+    dwReserved1         DWORD ?
+    cFileName           WORD MAX_PATH dup(?)
+    cAlternateFileName  WORD 14 dup(?)
+WIN32_FIND_DATAW ENDS
+
+BROWSEINFOW STRUCT
+    hwndOwner       DWORD ?
+    pidlRoot        DWORD ?
+    pszDisplayName  DWORD ?
+    lpszTitle       DWORD ?
+    ulFlags         DWORD ?
+    lpfn            DWORD ?
+    lParam          DWORD ?
+    iImage          DWORD ?
+BROWSEINFOW ENDS
+
+; In-memory image model node
+NODE_NAME_MAX           equ 256
+NF_DIR                  equ 1       ; directory
+NF_ISO                  equ 2       ; data lives in the mapped image (pRec / isoExtent)
+NF_HOST                 equ 4       ; data lives in a host file (pszHost)
+
+NODE STRUCT
+    pParent         DWORD ?
+    pFirstChild     DWORD ?
+    pNextSibling    DWORD ?
+    nflags          DWORD ?
+    pRec            DWORD ?
+    pszHost         DWORD ?
+    dataSize        DWORD ?
+    isoExtent       DWORD ?
+    hTree           DWORD ?
+    wExtent         DWORD ?         ; writer: primary dir extent / file data extent
+    wExtentJ        DWORD ?         ; writer: Joliet dir extent
+    wDirSize        DWORD ?
+    wDirSizeJ       DWORD ?
+    wPathIdx        DWORD ?
+    wPathIdxJ       DWORD ?
+    recDate         BYTE 7 dup(?)   ; ISO 9660 recording date
+    isoName         BYTE 33 dup(?)  ; generated primary identifier, NUL-terminated
+    szName          WORD NODE_NAME_MAX dup(?)
+NODE ENDS
+
+HeapAlloc           PROTO :DWORD,:DWORD,:DWORD
+HeapFree            PROTO :DWORD,:DWORD,:DWORD
+GetProcessHeap      PROTO
+RtlMoveMemory       PROTO :DWORD,:DWORD,:DWORD
+WriteFile           PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD
+ReadFile            PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD
+SetFilePointerEx    PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD
+CreateDirectoryW    PROTO :DWORD,:DWORD
+MoveFileExW         PROTO :DWORD,:DWORD,:DWORD
+DeleteFileW         PROTO :DWORD
+GetFileAttributesW  PROTO :DWORD
+FindFirstFileW      PROTO :DWORD,:DWORD
+FindNextFileW       PROTO :DWORD,:DWORD
+FindClose           PROTO :DWORD
+FileTimeToLocalFileTime PROTO :DWORD,:DWORD
+FileTimeToSystemTime PROTO :DWORD,:DWORD
+GetLocalTime        PROTO :DWORD
+lstrcatW            PROTO :DWORD,:DWORD
+lstrcmpW            PROTO :DWORD,:DWORD
+lstrlenW            PROTO :DWORD
+MultiByteToWideChar PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD
+CharUpperW          PROTO :DWORD
+GetSaveFileNameW    PROTO :DWORD
+SHBrowseForFolderW  PROTO :DWORD
+SHGetPathFromIDListW PROTO :DWORD,:DWORD
+CoTaskMemFree       PROTO :DWORD
+CoInitialize        PROTO :DWORD
+DragAcceptFiles     PROTO :DWORD,:DWORD
+DragQueryFileW      PROTO :DWORD,:DWORD,:DWORD,:DWORD
+DragFinish          PROTO :DWORD
+CreatePopupMenu     PROTO
+AppendMenuW         PROTO :DWORD,:DWORD,:DWORD,:DWORD
+TrackPopupMenu      PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD
+DestroyMenu         PROTO :DWORD
+GetMenu             PROTO :DWORD
+CheckMenuItem       PROTO :DWORD,:DWORD,:DWORD
+GetCursorPos        PROTO :DWORD
+ScreenToClient      PROTO :DWORD,:DWORD
+SetFocus            PROTO :DWORD
+BeginPaint          PROTO :DWORD,:DWORD
+EndPaint            PROTO :DWORD,:DWORD
+CreateIconFromResourceEx PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD
+DrawIconEx          PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD
+DestroyIcon         PROTO :DWORD
+SetBkColor          PROTO :DWORD,:DWORD
+IsWindowVisible     PROTO :DWORD
+
+; vfs.asm
+VfsInit             PROTO
+VfsClear            PROTO
+VfsNewImage         PROTO                       ; blank volume
+VfsBuildFromIso     PROTO                       ; from the currently mapped image
+VfsNew              PROTO :DWORD,:DWORD,:DWORD  ; pParent, pszName, flags -> NODE*
+VfsDelete           PROTO :DWORD                ; unlink + free
+VfsRename           PROTO :DWORD,:DWORD         ; pNode, pszName
+VfsFindChild        PROTO :DWORD,:DWORD         ; pParent, pszName -> NODE* or 0
+VfsUniqueName       PROTO :DWORD,:DWORD,:DWORD  ; pParent, pszBase, pszOut(NODE_NAME_MAX)
+VfsAddHostPath      PROTO :DWORD,:DWORD         ; pParent, pszPath -> NODE* or 0
+VfsDateNow          PROTO :DWORD                ; pNode
+VfsCopyData         PROTO :DWORD,:DWORD         ; pNode, hOut -> BOOL
+VfsReadAll          PROTO :DWORD,:DWORD,:DWORD  ; pNode, cbMax, pcbOut -> heap buffer or 0
+VfsExtract          PROTO :DWORD,:DWORD         ; pNode, pszDir -> BOOL
+VfsAlloc            PROTO :DWORD
+VfsFreeMem          PROTO :DWORD
+WriteAll            PROTO :DWORD,:DWORD,:DWORD  ; hFile, pData, cb -> BOOL
+EXTERNDEF g_pRootNode:DWORD
+EXTERNDEF g_bModified:DWORD
+
+; isowrite.asm
+IsoWrite            PROTO :DWORD                ; pszOutPath -> BOOL
+
+; preview.asm
+PreviewInit         PROTO :DWORD                ; hWndParent
+PreviewShow         PROTO :DWORD                ; pNode or 0 (clears)
+PreviewLayout       PROTO :DWORD,:DWORD,:DWORD,:DWORD ; x, y, cx, cy
+PreviewSetFont      PROTO                       ; after DPI change
+PreviewCtlColor     PROTO :DWORD,:DWORD         ; hdc, hwndCtl -> brush or 0
+EXTERNDEF g_bPreview:DWORD
+EXTERNDEF g_hEdit:DWORD
+
+; ui.asm (editing)
+UiRefreshTree       PROTO                       ; rebuild tree from model, keep current dir
+UiFillListNode      PROTO :DWORD                ; pDirNode
+UiSelectDir         PROTO :DWORD                ; pDirNode (select in tree)
+UiCurrentDir        PROTO                       ; -> NODE*
+UiSelectedNode      PROTO                       ; -> first selected list NODE* or 0
+UiForEachSelected   PROTO :DWORD,:DWORD         ; pfn(pNode, lParam), lParam
+UiBeginRename       PROTO :DWORD                ; pNode (must be in current list)
+UiUpdateTitle       PROTO
+UiListSubclass      PROTO :DWORD,:DWORD,:DWORD,:DWORD  ; called by theme's ListSubclassProc first; returns nonzero if handled (eax) and result in edx... (see ui.asm)
+EXTERNDEF g_pCurDir:DWORD
+EXTERNDEF g_szPath:WORD
+EXTERNDEF g_bHavePath:DWORD
+
+; Menu / accelerator IDs (keep in sync with res\foximg.rc)
+IDM_NEW                 equ 100
+IDM_SAVE                equ 103
+IDM_SAVEAS              equ 104
+IDM_EXPORT_FOLDER       equ 105
+IDM_EXPORT_BINCUE       equ 106
+IDM_ADDFILES            equ 110
+IDM_NEWFOLDER           equ 111
+IDM_NEWFILE             equ 112
+IDM_RENAME              equ 113
+IDM_DELETE              equ 114
+IDM_EXTRACT             equ 115
+IDM_PREVIEW             equ 120
+IDM_OPENDIR             equ 121
+IDC_EDIT                equ 1004
+IDC_ICONVIEW            equ 1005
+
+; main.asm commands callable from ui
+AppCommand          PROTO :DWORD                ; id
+IDM_REFRESH             equ 199
+WM_CLOSE                equ 0010h
+OFN_ALLOWMULTISELECT    equ 0200h
+PostMessageW        PROTO :DWORD,:DWORD,:DWORD,:DWORD
+Scale               PROTO :DWORD                ; ui.asm: MulDiv(value, g_dpi, 96)
+UiOnNotify          PROTO :DWORD                ; pNMHDR -> LRESULT
+UiContextMenu       PROTO :DWORD,:DWORD,:DWORD  ; hwndFrom, xScreen, yScreen
+UiOnDropFiles       PROTO :DWORD                ; hDrop
+UiCtxDir            PROTO                       ; -> directory NODE* that New Folder/File/Add target
+UiCtxIsTree         PROTO                       ; -> nonzero when the context menu came from the tree
+
+; ---------------------------------------------------------------------------
 ; FoxImg cross-module symbols
 ; ---------------------------------------------------------------------------
 ; iso9660.asm

@@ -152,6 +152,11 @@ g_bListSubclassed   dd 0
 .code
 
 ListSubclassProc PROC hWnd:DWORD, uMsg:DWORD, wParam:DWORD, lParam:DWORD, uIdSubclass:DWORD, dwRefData:DWORD
+    .IF uMsg == WM_DROPFILES
+        invoke UiOnDropFiles, wParam
+        xor eax, eax
+        ret
+    .ENDIF
     .IF uMsg == WM_NOTIFY && g_bDark != 0
         mov edx, lParam
         .IF [edx].NMHDR.code == NM_CUSTOMDRAW
@@ -200,6 +205,9 @@ ThemeApply PROC hWnd:DWORD
     .ENDIF
     invoke SetWindowTheme, g_hTree, pTheme, NULL
     invoke SetWindowTheme, g_hList, pTheme, NULL
+    .IF g_hEdit != 0
+        invoke SetWindowTheme, g_hEdit, pTheme, NULL
+    .ENDIF
 
     invoke SendMessageW, g_hList, LVM_GETHEADER, 0, 0
     mov hHeader, eax
