@@ -1,0 +1,55 @@
+// FoxImg resources - IDs must match src\foximg.inc
+#define IDR_MAINMENU    1
+#define IDR_ACCEL       1
+#define IDM_OPEN        101
+#define IDM_EXIT        102
+#define IDM_ABOUT       201
+
+#define IDI_APP         1
+#define RT_MANIFEST     24
+
+1 RT_MANIFEST "foximg.manifest"
+IDI_APP ICON "foximg.ico"
+
+IDR_MAINMENU MENU
+BEGIN
+    POPUP "&File"
+    BEGIN
+        MENUITEM "&Open Image...\tCtrl+O", IDM_OPEN
+        MENUITEM SEPARATOR
+        MENUITEM "E&xit", IDM_EXIT
+    END
+    POPUP "&Help"
+    BEGIN
+        MENUITEM "&About FoxImg...", IDM_ABOUT
+    END
+END
+
+IDR_ACCEL ACCELERATORS
+BEGIN
+    "O", IDM_OPEN, VIRTKEY, CONTROL
+END
+
+1 VERSIONINFO
+FILEVERSION     0,1,0,0
+PRODUCTVERSION  0,1,0,0
+FILEOS          0x40004L
+FILETYPE        0x1L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "FileDescription",  "FoxImg disc image utility"
+            VALUE "FileVersion",      "0.1.0.0"
+            VALUE "InternalName",     "FoxImg"
+            VALUE "OriginalFilename", "FoxImg.exe"
+            VALUE "ProductName",      "FoxImg"
+            VALUE "ProductVersion",   "0.1.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
