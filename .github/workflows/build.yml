@@ -14,7 +14,7 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Build FoxImg.exe
         shell: cmd
@@ -38,7 +38,7 @@ jobs:
           "VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append
           Get-ChildItem dist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: FoxImg-${{ env.VERSION }}
           path: dist/FoxImg.exe
