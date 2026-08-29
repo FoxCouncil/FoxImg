@@ -24,7 +24,7 @@ WSTR szBusy, <Please wait for the current operation to finish (or cancel it).>
 WSTR szDiscard, <Discard unsaved changes?>
 WSTR szDeleteAsk, <Delete the selected items from the image?>
 WSTR szDeleteDirAsk, <Delete this folder and everything inside it?>
-WSTR szAboutText, <FoxImg v1.1 - a small native disc image utility. ISO 9660 / Joliet / El Torito; ISO, IMG, BIN/CUE.>
+WSTR szAboutText, <FoxImg v1.2 - a small native disc image utility. ISO 9660 / Joliet / El Torito; ISO, IMG, BIN/CUE.>
 WSTR szSaved, <Saved>
 WSTR szExtracted, <Extracted>
 WSTR szCancelled, <Cancelled>
