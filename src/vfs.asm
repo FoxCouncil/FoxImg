@@ -295,7 +295,7 @@ IsoNodeCb ENDP
 
 VfsPopulateIso PROC pDirNode:DWORD
     mov eax, pDirNode
-    invoke IsoEnumDir, [eax].NODE.pRec, offset IsoNodeCb, pDirNode
+    invoke IsoEnumDir, [eax].NODE.isoExtent, [eax].NODE.dataSize, offset IsoNodeCb, pDirNode
     ret
 VfsPopulateIso ENDP
 
@@ -312,10 +312,14 @@ VfsBuildFromIso PROC USES esi
         ret
     .ENDIF
     mov esi, eax
-    mov eax, g_pRoot
-    mov [esi].NODE.pRec, eax
-    mov eax, [eax].ISO_DIRREC.extentLE
-    mov [esi].NODE.isoExtent, eax
+    invoke IsoRootRecord
+    .IF eax == 0
+        ret
+    .ENDIF
+    mov ecx, [eax].ISO_DIRREC.extentLE
+    mov [esi].NODE.isoExtent, ecx
+    mov ecx, [eax].ISO_DIRREC.dataLenLE
+    mov [esi].NODE.dataSize, ecx
     invoke VfsDateNow, esi
     invoke VfsPopulateIso, esi
     mov g_bModified, FALSE
@@ -514,25 +518,6 @@ WriteAll PROC USES esi ebx hFile:DWORD, pData:DWORD, cb:DWORD
     mov eax, TRUE
     ret
 WriteAll ENDP
-
-; Pointer to a NF_ISO node's bytes inside the mapped view, or 0 if out of range
-VfsIsoPointer PROC USES esi pNode:DWORD
-    mov esi, pNode
-    mov eax, [esi].NODE.isoExtent
-    cmp eax, 200000h
-    jae bad
-    shl eax, 11
-    mov edx, eax
-    add edx, [esi].NODE.dataSize
-    jc bad
-    cmp edx, g_cbView
-    ja bad
-    add eax, g_pView
-    ret
-bad:
-    xor eax, eax
-    ret
-VfsIsoPointer ENDP
 
 VfsCopyData PROC USES esi ebx pNode:DWORD, hOut:DWORD
     LOCAL hIn:DWORD

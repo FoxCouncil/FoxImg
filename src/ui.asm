@@ -118,8 +118,9 @@ UiUpdateInfo PROC
         invoke lstrcpyW, addr szText, offset szNewImageFmt
     .ELSE
         invoke IsoFormatName, addr szFmt
-        mov eax, g_cbView
-        shr eax, 10
+        mov edx, g_cbFileHi
+        mov eax, g_cbFileLo
+        shrd eax, edx, 10                   ; 64-bit size in KB (fits: 4 TB limit)
         invoke wsprintfW, addr szText, offset szSizeFmt, addr szFmt, eax, g_nSectors
     .ENDIF
     invoke UiSetStatusPart, 2, addr szText

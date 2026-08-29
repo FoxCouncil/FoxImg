@@ -97,6 +97,7 @@ BootAddEntry ENDP
 BootParse PROC USES esi edi ebx
     LOCAL catLba:DWORD
     LOCAL platform:DWORD
+    LOCAL catalog[ISO_SECTOR]:BYTE
 
     mov g_bootCount, 0
     mov catLba, 0
@@ -132,11 +133,12 @@ sig_done:
         ret
     .ENDIF
 
-    invoke IsoSectorPtr, catLba
+    ; work on a copy: BootAddEntry reads other blocks, which can move the mapping window
+    invoke IsoReadExtent, catLba, ISO_SECTOR, addr catalog
     .IF eax == 0
         ret
     .ENDIF
-    mov esi, eax
+    lea esi, catalog
     ; validation entry
     .IF byte ptr [esi] != 1 || byte ptr [esi + 30] != 55h || byte ptr [esi + 31] != 0AAh
         ret

@@ -1100,14 +1100,14 @@ EXTERNDEF g_bCue:DWORD
 EXTERNDEF g_szBinPath:WORD
 IsoOpen         PROTO :DWORD                    ; pszPath -> BOOL
 IsoClose        PROTO
-IsoEnumDir      PROTO :DWORD,:DWORD,:DWORD      ; pDirRec, pfnCallback(pRec, lParam) -> continue?, lParam
+IsoEnumDir      PROTO :DWORD,:DWORD,:DWORD,:DWORD ; lba, cb, pfnCallback(pRec, lParam) -> continue?, lParam
+IsoRootRecord   PROTO                           ; -> pointer to the root directory record (valid until the next block fetch)
 IsoRecName      PROTO :DWORD,:DWORD,:DWORD      ; pRec, pszBuf, cchBuf
-IsoRecDate      PROTO :DWORD,:DWORD             ; pRec, pszBuf (>= 20 WCHARs)
 IsoVolumeName   PROTO :DWORD,:DWORD             ; pszBuf, cchBuf
 
-EXTERNDEF g_pView:DWORD
-EXTERNDEF g_cbView:DWORD
-EXTERNDEF g_pRoot:DWORD
+EXTERNDEF g_pView:DWORD                         ; nonzero while an image is open
+EXTERNDEF g_cbFileLo:DWORD
+EXTERNDEF g_cbFileHi:DWORD
 EXTERNDEF g_bJoliet:DWORD
 
 ; ui.asm
