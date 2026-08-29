@@ -1,0 +1,52 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build FoxImg.exe
+        shell: cmd
+        run: build.cmd
+
+      - name: Show size and imports
+        shell: pwsh
+        run: |
+          "FoxImg.exe $((Get-Item build\FoxImg.exe).Length) bytes"
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
+          & $dumpbin.FullName /nologo /dependents build\FoxImg.exe
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $ver = if ($env:GITHUB_REF -like 'refs/tags/v*') { $env:GITHUB_REF.Substring(11) } else { 'dev-' + $env:GITHUB_SHA.Substring(0, 7) }
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item build\FoxImg.exe dist\
+          Compress-Archive -Path build\FoxImg.exe -DestinationPath "dist\FoxImg-$ver-x86.zip"
+          "VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Get-ChildItem dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FoxImg-${{ env.VERSION }}
+          path: dist/FoxImg.exe
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$env:VERSION" "dist\FoxImg-$env:VERSION-x86.zip" "dist\FoxImg.exe" --title "FoxImg $env:VERSION" --generate-notes
