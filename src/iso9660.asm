@@ -33,6 +33,7 @@ WSTR szFmtIso, <ISO 9660>
 WSTR szFmtRaw2352, <RAW 2352 ISO 9660>
 WSTR szFmtRaw2336, <RAW 2336 ISO 9660>
 WSTR szFmtJoliet, < + Joliet>
+szFmtUdf    dw ' ','+',' ','U','D','F',' ','%','u','.','%','0','2','u',0
 szCatFmt    dw '%','s','%','s',0
 szKwFile    db 'FILE', 0
 szKwTrack   db 'TRACK', 0
@@ -136,6 +137,7 @@ IsoSectorPtr ENDP
 ; IsoClose - release mapping and file
 ; ---------------------------------------------------------------------------
 IsoClose PROC
+    invoke UdfClose
     .IF g_pView != 0
         invoke UnmapViewOfFile, g_pView
         mov g_pView, 0
@@ -757,6 +759,21 @@ IsoFormatName PROC pszBuf:DWORD
         add ecx, 8                          ; empty string (the terminator of szCatFmt)
     .ENDIF
     invoke wsprintfW, pszBuf, offset szCatFmt, pBase, ecx
+    .IF g_bUdf != 0
+        ; " + UDF 1.02" from the BCD-ish revision word (0102h)
+        mov eax, g_udfVersion
+        mov ecx, eax
+        shr eax, 8
+        and ecx, 0FFh
+        push ecx
+        push eax
+        invoke lstrlenW, pszBuf
+        mov edx, pszBuf
+        lea edx, [edx + eax * 2]
+        pop eax
+        pop ecx
+        invoke wsprintfW, edx, offset szFmtUdf, eax, ecx
+    .ENDIF
     ret
 IsoFormatName ENDP
 

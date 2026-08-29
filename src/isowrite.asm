@@ -79,6 +79,23 @@ SectorsFor PROC cb:DWORD
     ret
 SectorsFor ENDP
 
+SectorsFor64 PROC lo:DWORD, hi:DWORD
+    mov eax, lo
+    mov edx, hi
+    add eax, ISO_SECTOR - 1
+    adc edx, 0
+    shrd eax, edx, 11
+    ret
+SectorsFor64 ENDP
+
+; Files the ISO 9660 half cannot describe (over 4 GB) are left to UDF
+IsoSkips PROC pNode:DWORD
+    mov eax, pNode
+    mov eax, [eax].NODE.nflags
+    and eax, NF_UDFONLY
+    ret
+IsoSkips ENDP
+
 ; ---------------------------------------------------------------------------
 ; Output staging
 ; ---------------------------------------------------------------------------
@@ -523,21 +540,24 @@ ComputeDirSizes PROC USES esi edi pDir:DWORD
     mov esi, pDir
     mov edi, [esi].NODE.pFirstChild
     .WHILE edi != 0
-        invoke PrimaryNameLen, edi
-        add eax, 33
-        .IF eax & 1
-            inc eax
-        .ENDIF
-        invoke AddRecordSize, addr sz, eax
-        invoke JolietNameLen, edi
-        add eax, 33
-        .IF eax & 1
-            inc eax
-        .ENDIF
-        invoke AddRecordSize, addr szJ, eax
-        test [edi].NODE.nflags, NF_DIR
-        .IF !ZERO?
-            invoke ComputeDirSizes, edi
+        invoke IsoSkips, edi
+        .IF eax == 0
+            invoke PrimaryNameLen, edi
+            add eax, 33
+            .IF eax & 1
+                inc eax
+            .ENDIF
+            invoke AddRecordSize, addr sz, eax
+            invoke JolietNameLen, edi
+            add eax, 33
+            .IF eax & 1
+                inc eax
+            .ENDIF
+            invoke AddRecordSize, addr szJ, eax
+            test [edi].NODE.nflags, NF_DIR
+            .IF !ZERO?
+                invoke ComputeDirSizes, edi
+            .ENDIF
         .ENDIF
         mov edi, [edi].NODE.pNextSibling
     .ENDW
@@ -641,7 +661,7 @@ AssignFileExtents PROC USES esi pDir:DWORD
         .ELSE
             mov eax, g_lba
             mov [esi].NODE.wExtent, eax
-            invoke SectorsFor, [esi].NODE.dataSize
+            invoke SectorsFor64, [esi].NODE.dataSize, [esi].NODE.dataSizeHi
             add g_lba, eax
         .ENDIF
         mov esi, [esi].NODE.pNextSibling
@@ -666,10 +686,9 @@ IsoWritePadTo PROC cb:DWORD
 IsoWritePadTo ENDP
 
 AssignLayout PROC USES esi ebx
-    mov g_lba, 19                           ; PVD, SVD, terminator
-    .IF g_bootCount != 0
-        inc g_lba                           ; + Boot Record Volume Descriptor
-    .ENDIF
+    ; blocks 16..256 hold the ISO and UDF volume descriptors; everything else lives in the UDF partition
+    mov g_lba, UDF_PART_START
+    invoke UdfLayout
     mov eax, g_lba
     mov g_ptL, eax
     invoke SectorsFor, g_ptSize
@@ -716,6 +735,7 @@ AssignLayout PROC USES esi ebx
     .ENDW
     invoke AssignFileExtents, g_pRootNode
     invoke BootAssignLayout, offset g_lba   ; hidden boot images (entries not backed by a file)
+    inc g_lba                               ; closing UDF anchor
     mov eax, g_lba
     mov g_totalSectors, eax
     ret
@@ -1010,6 +1030,11 @@ WriteDirectory PROC USES esi edi ebx pDir:DWORD, bJoliet:DWORD
 
     mov edi, [esi].NODE.pFirstChild
     .WHILE edi != 0
+        invoke IsoSkips, edi
+        .IF eax != 0
+            mov edi, [edi].NODE.pNextSibling
+            .CONTINUE
+        .ENDIF
         test [edi].NODE.nflags, NF_DIR
         .IF !ZERO?
             mov fileFlags, ISO_FLAG_DIRECTORY
@@ -1066,7 +1091,7 @@ WriteFiles PROC USES esi pDir:DWORD
         test [esi].NODE.nflags, NF_DIR
         .IF !ZERO?
             invoke WriteFiles, esi
-        .ELSEIF [esi].NODE.dataSize != 0
+        .ELSEIF [esi].NODE.dataSize != 0 || [esi].NODE.dataSizeHi != 0
             invoke VfsCopyData, esi, g_hOut
             .IF eax == 0
                 mov g_fail, TRUE
@@ -1080,7 +1105,7 @@ WriteFiles PROC USES esi pDir:DWORD
             .IF pad != 0
                 invoke WriteAll, g_hOut, g_pSec, pad
             .ENDIF
-            invoke SectorsFor, [esi].NODE.dataSize
+            invoke SectorsFor64, [esi].NODE.dataSize, [esi].NODE.dataSizeHi
             add g_lba, eax
         .ENDIF
         mov esi, [esi].NODE.pNextSibling
@@ -1115,8 +1140,10 @@ IsoWrite PROC USES esi ebx pszOutPath:DWORD
     .ENDIF
     invoke AssignLayout
     mov eax, g_totalSectors
-    shl eax, 11
+    mov ecx, ISO_SECTOR
+    mul ecx                                 ; edx:eax = bytes
     mov g_progTotal, eax                    ; every byte goes through WriteAll, which counts
+    mov g_progTotalHi, edx
 
     invoke CreateFileW, pszOutPath, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL
     .IF eax == INVALID_HANDLE_VALUE
@@ -1134,6 +1161,9 @@ IsoWrite PROC USES esi ebx pszOutPath:DWORD
     .ENDIF
     invoke WriteVolumeDescriptor, TRUE
     invoke WriteTerminator
+    invoke UdfEmitRecognition               ; BEA01 NSR02 TEA01 close the recognition sequence
+    invoke UdfEmitPreamble                  ; VDS x2, LVID, anchor at 256 -> g_lba == UDF_PART_START
+    invoke UdfEmitPartition                 ; FSD, file entries, directory streams
     invoke WritePathTable, FALSE, FALSE
     invoke WritePathTable, FALSE, TRUE
     invoke WritePathTable, TRUE, FALSE
@@ -1161,7 +1191,12 @@ IsoWrite PROC USES esi ebx pszOutPath:DWORD
     invoke WriteFiles, g_pRootNode
     .IF g_bootCount != 0 && g_fail == 0
         invoke BootWriteBlobs
-        invoke BootPatchInfoTables
+    .ENDIF
+    .IF g_fail == 0
+        invoke UdfEmitTrailer               ; closing anchor in the last block
+    .ENDIF
+    .IF g_bootCount != 0 && g_fail == 0
+        invoke BootPatchInfoTables          ; seeks backwards, so after all sequential writes
     .ENDIF
 
     invoke CloseHandle, g_hOut

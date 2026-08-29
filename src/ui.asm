@@ -44,6 +44,7 @@ WSTR szMenuExportAll, <Export All To Folder...>
 
 szStatusFmt dw '%','u',' ','i','t','e','m','s',0
 szUintFmt   dw '%','u',0
+szMBFmt     dw '%','u',' ','M','B',0
 szDateFmt   dw '%','0','4','u','-','%','0','2','u','-','%','0','2','u',' ','%','0','2','u',':','%','0','2','u',0
 szTitleFmt  dw 'F','o','x','I','m','g',' ','-',' ','%','s',0
 szTitleModFmt dw 'F','o','x','I','m','g',' ','-',' ','%','s',' ','*',0
@@ -411,7 +412,14 @@ UiInsertListItem PROC USES esi pNode:DWORD
         invoke SetSubItem, iItem, 1, offset szDirTag
         invoke SetSubItem, iItem, 2, offset szTypeFolder
     .ELSE
-        invoke wsprintfW, addr szBuf, offset szUintFmt, [esi].NODE.dataSize
+        .IF [esi].NODE.dataSizeHi != 0
+            mov eax, [esi].NODE.dataSize
+            mov edx, [esi].NODE.dataSizeHi
+            shrd eax, edx, 20
+            invoke wsprintfW, addr szBuf, offset szMBFmt, eax
+        .ELSE
+            invoke wsprintfW, addr szBuf, offset szUintFmt, [esi].NODE.dataSize
+        .ENDIF
         invoke SetSubItem, iItem, 1, addr szBuf
         invoke SetSubItem, iItem, 2, offset szTypeFile
     .ENDIF

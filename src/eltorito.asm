@@ -31,7 +31,7 @@ WSTR szEltoritoBin, <eltorito.bin>
 ; Parsing the open image
 ; ---------------------------------------------------------------------------
 BootAddEntry PROC USES esi edi platform:DWORD, pEntry:DWORD
-    LOCAL hdr[64]:BYTE
+    LOCAL hdr[512]:BYTE
     LOCAL pNode:DWORD
     LOCAL rba:DWORD
 
@@ -81,7 +81,6 @@ BootAddEntry PROC USES esi edi platform:DWORD, pEntry:DWORD
             .ENDIF
         .ENDIF
     .ELSE
-        mov [edi].BOOTENTRY.blobExtent, eax
         mov eax, rba
         mov [edi].BOOTENTRY.blobExtent, eax
         mov eax, [edi].BOOTENTRY.sectors
@@ -90,6 +89,25 @@ BootAddEntry PROC USES esi edi platform:DWORD, pEntry:DWORD
             mov eax, ISO_SECTOR
         .ENDIF
         mov [edi].BOOTENTRY.blobSize, eax
+        ; A FAT boot sector (UEFI system partition images, Windows media sets the count to 1) knows its own size
+        invoke IsoReadExtent, rba, 512, addr hdr
+        mov cl, hdr[0]
+        .IF eax != 0 && word ptr hdr[510] == 0AA55h && cl != 0EBh && cl != 0E9h
+            mov eax, 0                          ; not a boot sector
+        .ENDIF
+        .IF eax != 0 && word ptr hdr[510] == 0AA55h
+            movzx ecx, word ptr hdr[11]         ; bytes per sector
+            movzx eax, word ptr hdr[19]         ; total sectors (small)
+            .IF eax == 0
+                mov eax, dword ptr hdr[32]      ; total sectors (large)
+            .ENDIF
+            .IF ecx >= 512 && ecx <= 4096 && eax != 0
+                mul ecx
+                .IF edx == 0 && eax <= 256 * 1024 * 1024 && eax > [edi].BOOTENTRY.blobSize
+                    mov [edi].BOOTENTRY.blobSize, eax
+                .ENDIF
+            .ENDIF
+        .ENDIF
     .ENDIF
     ret
 BootAddEntry ENDP

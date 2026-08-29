@@ -11,8 +11,10 @@ JOB_PATHS_MAX   equ 65536       ; WCHARs
 g_jobBusy       dd 0
 g_jobKind       dd 0
 g_jobCancel     dd 0
-g_progDone      dd 0
-g_progTotal     dd 0            ; 0 = unknown (marquee)
+g_progDone      dd 0            ; 64-bit byte counters (lo, hi)
+g_progDoneHi    dd 0
+g_progTotal     dd 0            ; 0:0 = unknown (marquee)
+g_progTotalHi   dd 0
 g_hProgress     dd 0
 g_hCancelBtn    dd 0
 g_hJobThread    dd 0
@@ -126,9 +128,36 @@ JobSetCursor PROC
     ret
 JobSetCursor ENDP
 
+; done * scale / total, computed in KB so 64-bit byte counts fit (up to 4 TB)
+JobProgress PROC scale:DWORD
+    mov eax, g_progDone
+    mov edx, g_progDoneHi
+    shrd eax, edx, 10
+    mov ecx, g_progTotal
+    mov edx, g_progTotalHi
+    shrd ecx, edx, 10
+    .IF ecx == 0
+        inc ecx
+    .ENDIF
+    xor edx, edx
+    imul eax, scale
+    div ecx
+    .IF eax > scale
+        mov eax, scale
+    .ENDIF
+    ret
+JobProgress ENDP
+
+JobHaveTotal PROC
+    mov eax, g_progTotal
+    or eax, g_progTotalHi
+    ret
+JobHaveTotal ENDP
+
 JobStatusText PROC
     LOCAL szText[128]:WORD
     LOCAL pct:DWORD
+    LOCAL pKind:DWORD
     mov eax, g_jobKind
     mov ecx, offset szJobSave
     .IF eax == JOB_EXTRACT
@@ -136,31 +165,18 @@ JobStatusText PROC
     .ELSEIF eax == JOB_ADD
         mov ecx, offset szJobAdd
     .ENDIF
+    mov pKind, ecx
     .IF g_jobCancel != 0
         invoke UiSetStatusPart, 1, offset szCancelling
         ret
     .ENDIF
-    .IF g_progTotal != 0
-        mov eax, g_progDone
-        shr eax, 10
-        mov edx, g_progTotal
-        shr edx, 10
-        .IF edx == 0
-            inc edx
-        .ENDIF
-        push ecx
-        mov ecx, edx
-        xor edx, edx
-        imul eax, 100
-        div ecx
-        .IF eax > 100
-            mov eax, 100
-        .ENDIF
+    invoke JobHaveTotal
+    .IF eax != 0
+        invoke JobProgress, 100
         mov pct, eax
-        pop ecx
-        invoke wsprintfW, addr szText, offset szPctFmt, ecx, pct
+        invoke wsprintfW, addr szText, offset szPctFmt, pKind, pct
     .ELSE
-        invoke wsprintfW, addr szText, offset szDotsFmt, ecx
+        invoke wsprintfW, addr szText, offset szDotsFmt, pKind
     .ENDIF
     invoke UiSetStatusPart, 1, addr szText
     ret
@@ -170,25 +186,13 @@ JobOnTimer PROC
     .IF g_jobBusy == 0
         ret
     .ENDIF
-    .IF g_progTotal != 0
+    invoke JobHaveTotal
+    .IF eax != 0
         .IF g_bMarquee != 0
             invoke SendMessageW, g_hProgress, PBM_SETMARQUEE, FALSE, 0
             mov g_bMarquee, 0
         .ENDIF
-        mov eax, g_progDone
-        shr eax, 10
-        mov edx, g_progTotal
-        shr edx, 10
-        .IF edx == 0
-            inc edx
-        .ENDIF
-        mov ecx, edx
-        xor edx, edx
-        imul eax, 1000
-        div ecx
-        .IF eax > 1000
-            mov eax, 1000
-        .ENDIF
+        invoke JobProgress, 1000
         invoke SendMessageW, g_hProgress, PBM_SETPOS, eax, 0
     .ELSEIF g_bMarquee == 0
         invoke SendMessageW, g_hProgress, PBM_SETMARQUEE, TRUE, 50
@@ -220,6 +224,7 @@ JobBegin PROC kind:DWORD
     mov g_jobKind, eax
     mov g_jobCancel, 0
     mov g_progDone, 0
+    mov g_progDoneHi, 0
     mov g_jobResult, 0
     mov g_bMarquee, 0
     mov g_jobBusy, TRUE
@@ -276,6 +281,7 @@ JobStartSave PROC pszTmpPath:DWORD
         ret
     .ENDIF
     invoke lstrcpynW, offset g_jobPath, pszTmpPath, MAX_PATH
+    mov g_progTotalHi, 0
     mov g_progTotal, 0                      ; the writer fills it in once the layout is known
     invoke JobBegin, JOB_SAVE
     ret
@@ -296,23 +302,22 @@ JobNodesAdd PROC pNode:DWORD, lParam:DWORD
     ret
 JobNodesAdd ENDP
 
-; Bytes below a node (files only)
+; Bytes below a node (files only), accumulated into the 64-bit total
 NodeBytes PROC USES esi pNode:DWORD
-    LOCAL total:DWORD
     mov esi, pNode
     test [esi].NODE.nflags, NF_DIR
     .IF ZERO?
         mov eax, [esi].NODE.dataSize
+        add g_progTotal, eax
+        mov eax, [esi].NODE.dataSizeHi
+        adc g_progTotalHi, eax
         ret
     .ENDIF
-    mov total, 0
     mov esi, [esi].NODE.pFirstChild
     .WHILE esi != 0
         invoke NodeBytes, esi
-        add total, eax
         mov esi, [esi].NODE.pNextSibling
     .ENDW
-    mov eax, total
     ret
 NodeBytes ENDP
 
@@ -323,13 +328,14 @@ JobStartExtract PROC USES ebx pszDir:DWORD
     .ENDIF
     invoke lstrcpynW, offset g_jobDir, pszDir, MAX_PATH
     mov g_progTotal, 0
+    mov g_progTotalHi, 0
     xor ebx, ebx
     .WHILE ebx < g_nJobNodes
         invoke NodeBytes, g_jobNodes[ebx * 4]
-        add g_progTotal, eax
         inc ebx
     .ENDW
-    .IF g_progTotal == 0
+    invoke JobHaveTotal
+    .IF eax == 0
         mov g_progTotal, 1
     .ENDIF
     invoke JobBegin, JOB_EXTRACT
@@ -378,6 +384,7 @@ JobStartAdd PROC pDirNode:DWORD
     .ENDIF
     mov eax, pDirNode
     mov g_jobNode, eax
+    mov g_progTotalHi, 0
     mov g_progTotal, 0                      ; unknown -> marquee
     ; the worker may replace nodes shown in the list; empty it first
     invoke UiFillListNode, 0

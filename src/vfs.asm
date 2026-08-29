@@ -153,6 +153,7 @@ VfsFree PROC USES esi edi ebx pNode:DWORD
         mov ebx, edi
     .ENDW
     invoke VfsFreeMem, [esi].NODE.pszHost
+    invoke VfsFreeMem, [esi].NODE.pExtList
     invoke VfsFreeMem, esi
     ret
 VfsFree ENDP
@@ -312,6 +313,17 @@ VfsBuildFromIso PROC USES esi
         ret
     .ENDIF
     mov esi, eax
+    invoke VfsDateNow, esi
+    ; UDF tree wins when present (Windows media keeps only a stub in the ISO 9660 half)
+    invoke UdfOpen
+    .IF eax != 0
+        invoke UdfBuildTree, esi
+        .IF eax != 0
+            mov g_bModified, FALSE
+            ret
+        .ENDIF
+        invoke UdfClose
+    .ENDIF
     invoke IsoRootRecord
     .IF eax == 0
         ret
@@ -320,7 +332,6 @@ VfsBuildFromIso PROC USES esi
     mov [esi].NODE.isoExtent, ecx
     mov ecx, [eax].ISO_DIRREC.dataLenLE
     mov [esi].NODE.dataSize, ecx
-    invoke VfsDateNow, esi
     invoke VfsPopulateIso, esi
     mov g_bModified, FALSE
     ret
@@ -394,10 +405,6 @@ VfsAddHostPath PROC USES esi edi ebx pParent:DWORD, pszPath:DWORD
     ret
 
 add_file:
-    .IF fd.nFileSizeHigh != 0
-        xor eax, eax                        ; > 4 GB: not representable in a single ISO 9660 extent
-        ret
-    .ENDIF
     invoke VfsNew, pParent, addr fd.cFileName, NF_HOST
     mov pNode, eax
     .IF eax == 0
@@ -406,6 +413,11 @@ add_file:
     mov esi, eax
     mov eax, fd.nFileSizeLow
     mov [esi].NODE.dataSize, eax
+    mov eax, fd.nFileSizeHigh
+    mov [esi].NODE.dataSizeHi, eax
+    .IF eax != 0
+        or [esi].NODE.nflags, NF_UDFONLY    ; ISO 9660 cannot describe it; UDF can
+    .ENDIF
     invoke VfsDateFromFileTime, esi, addr fd.ftLastWriteTime
     invoke lstrlenW, pszPath
     inc eax
@@ -511,7 +523,8 @@ WriteAll PROC USES esi ebx hFile:DWORD, pData:DWORD, cb:DWORD
             ret
         .ENDIF
         mov eax, written
-        add g_progDone, eax                 ; progress for whoever is watching
+        add g_progDone, eax                 ; progress for whoever is watching (64-bit)
+        adc g_progDoneHi, 0
         add esi, written
         sub ebx, written
     .ENDW
@@ -527,7 +540,26 @@ VfsCopyData PROC USES esi ebx pNode:DWORD, hOut:DWORD
 
     mov esi, pNode
     mov eax, [esi].NODE.nflags
-    .IF eax & NF_ISO
+    .IF eax & NF_MEM
+        invoke WriteAll, hOut, [esi].NODE.pszHost, [esi].NODE.dataSize
+        ret
+    .ELSEIF eax & NF_ISO
+        .IF [esi].NODE.pExtList != 0
+            mov ebx, [esi].NODE.pExtList
+            mov ecx, [esi].NODE.nExtList
+            .WHILE ecx != 0
+                push ecx
+                invoke IsoCopyExtent, [ebx].EXTENT.lba, [ebx].EXTENT.cb, hOut
+                pop ecx
+                .IF eax == 0
+                    ret
+                .ENDIF
+                add ebx, sizeof EXTENT
+                dec ecx
+            .ENDW
+            mov eax, TRUE
+            ret
+        .ENDIF
         invoke IsoCopyExtent, [esi].NODE.isoExtent, [esi].NODE.dataSize, hOut
         ret
     .ELSEIF eax & NF_HOST
@@ -589,7 +621,18 @@ VfsReadAll PROC USES esi edi pNode:DWORD, cbMax:DWORD, pcbOut:DWORD
     mov pBuf, eax
 
     mov eax, [esi].NODE.nflags
-    .IF eax & NF_ISO
+    .IF eax & NF_MEM
+        invoke RtlMoveMemory, pBuf, [esi].NODE.pszHost, cb
+    .ELSEIF eax & NF_ISO
+        ; the preview cap is far below one extent, so the first run is enough
+        mov eax, cb
+        .IF [esi].NODE.pExtList != 0
+            mov ecx, [esi].NODE.pExtList
+            .IF eax > [ecx].EXTENT.cb
+                mov eax, [ecx].EXTENT.cb
+                mov cb, eax
+            .ENDIF
+        .ENDIF
         invoke IsoReadExtent, [esi].NODE.isoExtent, cb, pBuf
         .IF eax == 0
             jmp fail

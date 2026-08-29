@@ -757,6 +757,15 @@ NF_DIR                  equ 1       ; directory
 NF_ISO                  equ 2       ; data lives in the mapped image (pRec / isoExtent)
 NF_HOST                 equ 4       ; data lives in a host file (pszHost)
 
+NF_MEM                  equ 8       ; data is a heap block (pszHost points at it) - UDF embedded files
+NF_UDFONLY              equ 16      ; over 4 GB: written to the UDF half only
+
+; Extent list entry for multi-extent files (absolute block, bytes)
+EXTENT STRUCT
+    lba     DWORD ?
+    cb      DWORD ?
+EXTENT ENDS
+
 NODE STRUCT
     pParent         DWORD ?
     pFirstChild     DWORD ?
@@ -764,9 +773,15 @@ NODE STRUCT
     nflags          DWORD ?
     pRec            DWORD ?
     pszHost         DWORD ?
-    dataSize        DWORD ?
-    isoExtent       DWORD ?
+    dataSize        DWORD ?         ; low 32 bits
+    isoExtent       DWORD ?         ; first (or only) extent, absolute block
     hTree           DWORD ?
+    dataSizeHi      DWORD ?         ; high 32 bits
+    pExtList        DWORD ?         ; EXTENT array when the data is not one contiguous run, else 0
+    nExtList        DWORD ?
+    wUdfFe          DWORD ?         ; writer: partition-relative block of this node's File Entry
+    wUdfDir         DWORD ?         ; writer: partition-relative block of directory FID data (dirs)
+    wUdfDirLen      DWORD ?         ; writer: bytes of FID data (dirs)
     wExtent         DWORD ?         ; writer: primary dir extent / file data extent
     wExtentJ        DWORD ?         ; writer: Joliet dir extent
     wDirSize        DWORD ?
@@ -1063,6 +1078,37 @@ EXTERNDEF g_progTotal:DWORD
 EXTERNDEF g_hCancelBtn:DWORD
 EXTERNDEF g_hProgress:DWORD
 AppJobFinished      PROTO :DWORD,:DWORD         ; main.asm: kind, result
+
+; ---------------------------------------------------------------------------
+; UDF (udf.asm reader, udfwrite.asm writer)
+; ---------------------------------------------------------------------------
+UdfOpen             PROTO                       ; after IsoOpen -> TRUE when a UDF root was found
+UdfClose            PROTO
+UdfBuildTree        PROTO :DWORD                ; pRootNode -> node count
+EXTERNDEF g_bUdf:DWORD
+EXTERNDEF g_udfVersion:DWORD
+
+UDF_PART_START      equ 257                     ; partition begins right after the anchor at 256
+UdfLayout           PROTO                       ; assign FE / FID blocks from g_lba (call with g_lba == UDF_PART_START)
+UdfEmitRecognition  PROTO                       ; BEA01 NSR02 TEA01 at the current g_lba
+UdfEmitPreamble     PROTO                       ; pad to 32, VDS x2, LVID, pad to 256, AVDP (leaves g_lba == 257)
+UdfEmitPartition    PROTO                       ; FSD, TD, every FE and directory FID stream
+UdfEmitTrailer      PROTO                       ; closing AVDP (last block)
+EXTERNDEF g_totalSectors:DWORD
+SectorsFor64        PROTO :DWORD,:DWORD         ; lo, hi -> blocks
+; isowrite.asm staging shared with udfwrite.asm
+SectorsFor          PROTO :DWORD
+FillBytes           PROTO :DWORD,:DWORD,:DWORD
+SecBegin            PROTO
+SecWrite            PROTO
+SecFlush            PROTO
+SecPutBytes         PROTO :DWORD,:DWORD
+EXTERNDEF g_pSec:DWORD
+EXTERNDEF g_fail:DWORD
+FID_DIR_FLAG        equ 02h
+FID_PARENT_DIR      equ 0Ah
+EXTERNDEF g_progDoneHi:DWORD
+EXTERNDEF g_progTotalHi:DWORD
 
 ; main.asm commands callable from ui
 AppCommand          PROTO :DWORD                ; id
