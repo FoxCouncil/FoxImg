@@ -34,7 +34,6 @@ g_bRegistered   dd 0
 
 WSTR szTempSub, <FoxImg>
 szTempFmt       dw '%','s','F','o','x','I','m','g','\','%','u',0
-szJoinFmt       dw '%','s','\','%','s',0
 
 .data?
 g_dragNodes     dd DRAG_MAX dup(?)
@@ -427,7 +426,7 @@ BuildHDrop PROC USES esi edi ebx
     .WHILE ebx < g_nDragNodes
         mov esi, g_dragNodes[ebx * 4]
         lea eax, [esi].NODE.szName
-        invoke wsprintfW, edi, offset szJoinFmt, offset g_szTempDir, eax
+        invoke wsprintfW, edi, offset g_szJoinFmt, offset g_szTempDir, eax
         lea edi, [edi + eax * 2 + 2]
         inc ebx
     .ENDW

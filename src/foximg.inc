@@ -1171,11 +1171,25 @@ EXTERNDEF g_cbFileLo:DWORD
 EXTERNDEF g_cbFileHi:DWORD
 EXTERNDEF g_bJoliet:DWORD
 
+; strutil.asm
+PathExt         PROTO :DWORD                    ; pszPath -> pointer to ".ext" or the NUL
+PathLeaf        PROTO :DWORD                    ; pszPath -> pointer to the leaf
+PathWithExt     PROTO :DWORD,:DWORD,:DWORD      ; pszOut, pszPath, pszNewExt
+HasExt          PROTO :DWORD,:DWORD             ; pszPath, pszExt -> BOOL
+PathDirJoin     PROTO :DWORD,:DWORD,:DWORD      ; pszOut, pszRef, pszName (relative to pszRef's directory)
+FindKeyword     PROTO :DWORD,:DWORD,:DWORD      ; pBuf, cb, pszKeyA -> pointer past it or 0
+ParseUint       PROTO :DWORD                    ; pText -> eax value, edx next
+ParseName       PROTO :DWORD,:DWORD             ; pText, pszOut -> edx next
+FileReadAt      PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD  ; hFile, offLo, offHi, pDst, cb -> bytes read
+FileSize64      PROTO :DWORD,:DWORD,:DWORD      ; hFile, pLo, pHi
+ReadTextFile    PROTO :DWORD,:DWORD             ; pszPath, pcb -> heap buffer or 0
+EXTERNDEF g_szJoinFmt:WORD
+EXTERNDEF g_szCatFmt:WORD
+EXTERNDEF g_szUintFmt:WORD
+
 ; ui.asm
 UiCreateControls PROTO :DWORD                   ; hWndParent
 UiLayout        PROTO :DWORD                    ; hWndParent
-UiFillTree      PROTO
-UiFillList      PROTO :DWORD                    ; pDirRec
 UiSetStatus     PROTO :DWORD                    ; pszText
 
 EXTERNDEF g_hInst:DWORD

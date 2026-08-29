@@ -30,26 +30,16 @@ g_dataBaseLo dd 0           ; byte offset of the data track inside the file (con
 g_dataBaseHi dd 0
 g_lbaBase   dd 0            ; LBA of the first block of the data track (Dreamcast: 45000)
 
-szDateFmt   dw '%','0','4','u','-','%','0','2','u','-','%','0','2','u',' ','%','0','2','u',':','%','0','2','u',0
-WSTR szExtCue, <.cue>
 WSTR szFmtIso, <ISO 9660>
 WSTR szFmtRaw2352, <RAW 2352 ISO 9660>
 WSTR szFmtRaw2336, <RAW 2336 ISO 9660>
 WSTR szFmtJoliet, < + Joliet>
 szFmtUdf    dw ' ','+',' ','U','D','F',' ','%','u','.','%','0','2','u',0
 szCtPrefixFmt dw '%','s',':',' ',0
-szCatFmt    dw '%','s','%','s',0
-szKwFile    db 'FILE', 0
-szKwTrack   db 'TRACK', 0
-szKwM12048  db 'MODE1/2048', 0
-szKwM12352  db 'MODE1/2352', 0
-szKwM22352  db 'MODE2/2352', 0
-szKwM22336  db 'MODE2/2336', 0
 szSync      db 00h, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 00h
 
 .data?
 g_szBinPath dw MAX_PATH dup(?)
-g_cueFmt    dd ?            ; -1 = not specified by the sheet
 
 .code
 
@@ -180,164 +170,6 @@ IsoClose PROC
 IsoClose ENDP
 
 ; ---------------------------------------------------------------------------
-; CUE sheet parsing (first FILE and first TRACK only)
-; ---------------------------------------------------------------------------
-FindKeyword PROC USES esi edi ebx pBuf:DWORD, cb:DWORD, pszKey:DWORD
-    LOCAL keyLen:DWORD
-    invoke lstrlenA, pszKey
-    mov keyLen, eax
-    mov esi, pBuf
-    mov ecx, cb
-    .WHILE ecx >= keyLen
-        mov edi, pszKey
-        xor ebx, ebx
-        .WHILE ebx < keyLen
-            mov al, [esi + ebx]
-            .IF al >= 'a' && al <= 'z'
-                sub al, 20h
-            .ENDIF
-            .BREAK .IF al != [edi + ebx]
-            inc ebx
-        .ENDW
-        .IF ebx == keyLen
-            lea eax, [esi + ebx]
-            ret
-        .ENDIF
-        inc esi
-        dec ecx
-    .ENDW
-    xor eax, eax
-    ret
-FindKeyword ENDP
-
-CueParse PROC USES esi edi ebx pszCue:DWORD
-    LOCAL hFile:DWORD
-    LOCAL liSize[2]:DWORD
-    LOCAL pBuf:DWORD
-    LOCAL cb:DWORD
-    LOCAL nRead:DWORD
-    LOCAL pName:DWORD
-    LOCAL nameLen:DWORD
-    LOCAL szName[MAX_PATH]:WORD
-    LOCAL ok:DWORD
-
-    mov g_cueFmt, -1
-    mov ok, FALSE
-    invoke CreateFileW, pszCue, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
-    .IF eax == INVALID_HANDLE_VALUE
-        ret
-    .ENDIF
-    mov hFile, eax
-    invoke GetFileSizeEx, hFile, addr liSize
-    mov eax, liSize[0]
-    .IF liSize[4] != 0 || eax > 65536
-        mov eax, 65536
-    .ENDIF
-    mov cb, eax
-    inc eax
-    invoke VfsAlloc, eax
-    mov pBuf, eax
-    .IF eax == 0
-        invoke CloseHandle, hFile
-        ret
-    .ENDIF
-    invoke ReadFile, hFile, pBuf, cb, addr nRead, NULL
-    invoke CloseHandle, hFile
-    mov eax, nRead
-    mov cb, eax
-
-    invoke FindKeyword, pBuf, cb, offset szKwFile
-    .IF eax == 0
-        jmp done
-    .ENDIF
-    mov esi, eax
-    .WHILE byte ptr [esi] == ' ' || byte ptr [esi] == 9
-        inc esi
-    .ENDW
-    .IF byte ptr [esi] == '"'
-        inc esi
-        mov pName, esi
-        .WHILE byte ptr [esi] != 0 && byte ptr [esi] != '"' && byte ptr [esi] != 13 && byte ptr [esi] != 10
-            inc esi
-        .ENDW
-    .ELSE
-        mov pName, esi
-        .WHILE byte ptr [esi] != 0 && byte ptr [esi] != ' ' && byte ptr [esi] != 13 && byte ptr [esi] != 10
-            inc esi
-        .ENDW
-    .ENDIF
-    mov eax, esi
-    sub eax, pName
-    mov nameLen, eax
-    .IF eax == 0 || eax >= MAX_PATH
-        jmp done
-    .ENDIF
-    invoke MultiByteToWideChar, CP_ACP, 0, pName, nameLen, addr szName, MAX_PATH - 1
-    mov word ptr szName[eax * 2], 0
-
-    .IF szName[0] == '\' || szName[2] == ':'
-        invoke lstrcpynW, offset g_szBinPath, addr szName, MAX_PATH
-    .ELSE
-        invoke lstrcpynW, offset g_szBinPath, pszCue, MAX_PATH
-        mov esi, offset g_szBinPath
-        mov edi, esi
-        .WHILE word ptr [esi] != 0
-            .IF word ptr [esi] == '\'
-                lea edi, [esi + 2]
-            .ENDIF
-            add esi, 2
-        .ENDW
-        mov word ptr [edi], 0
-        invoke lstrlenW, addr szName
-        mov nameLen, eax
-        invoke lstrlenW, offset g_szBinPath
-        add eax, nameLen
-        .IF eax >= MAX_PATH
-            jmp done
-        .ENDIF
-        invoke lstrcatW, offset g_szBinPath, addr szName
-    .ENDIF
-    mov ok, TRUE
-
-    invoke FindKeyword, pBuf, cb, offset szKwTrack
-    .IF eax != 0
-        mov esi, eax
-        mov ecx, pBuf
-        add ecx, cb
-        sub ecx, esi
-        push ecx
-        invoke FindKeyword, esi, ecx, offset szKwM12048
-        pop ecx
-        .IF eax != 0
-            mov g_cueFmt, FMT_ISO
-        .ELSE
-            push ecx
-            invoke FindKeyword, esi, ecx, offset szKwM12352
-            pop ecx
-            .IF eax != 0
-                mov g_cueFmt, FMT_RAW2352_M1
-            .ELSE
-                push ecx
-                invoke FindKeyword, esi, ecx, offset szKwM22352
-                pop ecx
-                .IF eax != 0
-                    mov g_cueFmt, FMT_RAW2352_M2
-                .ELSE
-                    invoke FindKeyword, esi, ecx, offset szKwM22336
-                    .IF eax != 0
-                        mov g_cueFmt, FMT_RAW2336
-                    .ENDIF
-                .ENDIF
-            .ENDIF
-        .ENDIF
-    .ENDIF
-done:
-    invoke VfsFreeMem, pBuf
-    mov eax, ok
-    ret
-CueParse ENDP
-
-; ---------------------------------------------------------------------------
 ; Geometry
 ; ---------------------------------------------------------------------------
 IsoSetFormat PROC fmt:DWORD
@@ -444,24 +276,8 @@ IsoOpen PROC USES esi edi ebx pszPath:DWORD
     LOCAL pData:DWORD
 
     invoke IsoClose
-    mov g_cueFmt, -1
     mov pData, 0
 
-    invoke lstrlenW, pszPath
-    .IF eax >= 4
-        mov ecx, pszPath
-        lea ecx, [ecx + eax * 2 - 8]
-        invoke lstrcmpiW, ecx, offset szExtCue
-        .IF eax == 0
-            invoke CueParse, pszPath
-            .IF eax == 0
-                xor eax, eax
-                ret
-            .ENDIF
-            mov g_bCue, TRUE
-            mov pData, offset g_szBinPath
-        .ENDIF
-    .ENDIF
     .IF pData == 0
         ; NRG / MDS / CCD / GDI / TOC / CDI: the container names the data file and its geometry
         invoke CtResolve, pszPath
@@ -505,10 +321,7 @@ retry_open:
     .IF g_bContainer != 0
         invoke IsoSetGeometry, g_ctSecSize, g_ctSecOff, g_ctBaseLo, g_ctBaseHi, g_ctLbaBase
     .ELSE
-        mov eax, g_cueFmt
-        .IF eax == -1
-            invoke IsoSniff
-        .ENDIF
+        invoke IsoSniff
         .IF eax == -1
             mov eax, FMT_ISO
         .ENDIF
@@ -844,10 +657,10 @@ IsoFormatName PROC pszBuf:DWORD
     .ENDIF
     mov ecx, offset szFmtJoliet
     .IF g_bJoliet == 0
-        mov ecx, offset szCatFmt
+        mov ecx, offset g_szCatFmt
         add ecx, 8                          ; empty string (the terminator of szCatFmt)
     .ENDIF
-    invoke wsprintfW, pszBuf, offset szCatFmt, pBase, ecx
+    invoke wsprintfW, pszBuf, offset g_szCatFmt, pBase, ecx
     .IF g_bUdf != 0
         ; " + UDF 1.02" from the BCD-ish revision word (0102h)
         mov eax, g_udfVersion

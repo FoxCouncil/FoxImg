@@ -59,9 +59,6 @@ szFilterAll LABEL WORD
 szCueFmt    dw 'F','I','L','E',' ','"','%','s','"',' ','B','I','N','A','R','Y',13,10
             dw ' ',' ','T','R','A','C','K',' ','0','1',' ','M','O','D','E','1','/','2','0','4','8',13,10
             dw ' ',' ',' ',' ','I','N','D','E','X',' ','0','1',' ','0','0',':','0','0',':','0','0',13,10,0
-szJoinFmt   dw '%','s','\','%','s',0
-szCatFmt    dw '%','s','%','s',0
-
 MULTI_BUF   equ 32768
 
 .data?
@@ -71,47 +68,6 @@ g_saveCue   dw MAX_PATH dup(?)
 g_saveTmp   dw MAX_PATH + 8 dup(?)
 
 .code
-
-; ---------------------------------------------------------------------------
-; Path helpers
-; ---------------------------------------------------------------------------
-PathExt PROC USES esi pszPath:DWORD
-    mov esi, pszPath
-    mov edx, 0
-    .WHILE word ptr [esi] != 0
-        .IF word ptr [esi] == '.'
-            mov edx, esi
-        .ELSEIF word ptr [esi] == '\'
-            mov edx, 0
-        .ENDIF
-        add esi, 2
-    .ENDW
-    .IF edx == 0
-        mov edx, esi
-    .ENDIF
-    mov eax, edx
-    ret
-PathExt ENDP
-
-PathLeaf PROC USES esi pszPath:DWORD
-    mov esi, pszPath
-    mov eax, esi
-    .WHILE word ptr [esi] != 0
-        .IF word ptr [esi] == '\'
-            lea eax, [esi + 2]
-        .ENDIF
-        add esi, 2
-    .ENDW
-    ret
-PathLeaf ENDP
-
-PathWithExt PROC pszOut:DWORD, pszPath:DWORD, pszNewExt:DWORD
-    invoke lstrcpynW, pszOut, pszPath, MAX_PATH - 8
-    invoke PathExt, pszOut
-    mov word ptr [eax], 0
-    invoke lstrcatW, pszOut, pszNewExt
-    ret
-PathWithExt ENDP
 
 ; ---------------------------------------------------------------------------
 ; Dialog helpers
@@ -251,7 +207,7 @@ SaveBegin PROC pszTarget:DWORD
             invoke lstrcpynW, offset g_saveData, addr szTarget, MAX_PATH
         .ENDIF
     .ENDIF
-    invoke wsprintfW, offset g_saveTmp, offset szCatFmt, offset g_saveData, offset szTmpSuffix
+    invoke wsprintfW, offset g_saveTmp, offset g_szCatFmt, offset g_saveData, offset szTmpSuffix
     invoke JobStartSave, offset g_saveTmp
     ret
 SaveBegin ENDP
@@ -378,8 +334,12 @@ CmdSaveAs PROC
 CmdSaveAs ENDP
 
 CmdSave PROC
-    ; containers (NRG, MDS, ...) are read-only inputs: saving means choosing an output image
-    .IF g_bHavePath != 0 && g_bContainer == 0
+    ; containers (NRG, MDS, ...) are read-only inputs: saving means choosing an output image; CUE stays writable
+    mov eax, g_bContainer
+    .IF g_bCue != 0
+        xor eax, eax
+    .ENDIF
+    .IF g_bHavePath != 0 && eax == 0
         invoke SaveBegin, offset g_szPath
     .ELSE
         invoke CmdSaveAs
@@ -464,7 +424,7 @@ CmdAddFiles PROC USES esi edi
         invoke JobPathsAdd, esi
     .ELSE
         .WHILE word ptr [edi] != 0
-            invoke wsprintfW, addr szPath, offset szJoinFmt, esi, edi
+            invoke wsprintfW, addr szPath, offset g_szJoinFmt, esi, edi
             invoke JobPathsAdd, addr szPath
             invoke lstrlenW, edi
             lea edi, [edi + eax * 2 + 2]

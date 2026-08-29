@@ -16,7 +16,6 @@ WSTR szBackslash, <\>
 szDotName       dw '.', 0
 szDotDotName    dw '.', '.', 0
 szUniqueFmt     dw '%','s',' ','(','%','u',')',0
-szJoinFmt       dw '%','s','\','%','s',0
 
 .code
 
@@ -391,7 +390,7 @@ VfsAddHostPath PROC USES esi edi ebx pParent:DWORD, pszPath:DWORD
             .IF eax != 0
                 invoke lstrcmpW, addr fd2.cFileName, offset szDotDotName
                 .IF eax != 0
-                    invoke wsprintfW, addr szChild, offset szJoinFmt, pszPath, addr fd2.cFileName
+                    invoke wsprintfW, addr szChild, offset g_szJoinFmt, pszPath, addr fd2.cFileName
                     invoke VfsAddHostPath, pNode, addr szChild
                 .ENDIF
             .ENDIF
@@ -668,7 +667,7 @@ VfsExtract PROC USES esi edi pNode:DWORD, pszDir:DWORD
     LOCAL ok:DWORD
 
     mov esi, pNode
-    invoke wsprintfW, addr szPath, offset szJoinFmt, pszDir, addr [esi].NODE.szName
+    invoke wsprintfW, addr szPath, offset g_szJoinFmt, pszDir, addr [esi].NODE.szName
     test [esi].NODE.nflags, NF_DIR
     jz ext_file
 

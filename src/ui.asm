@@ -43,7 +43,6 @@ WSTR szMenuDelete, <Delete>
 WSTR szMenuExportAll, <Export All To Folder...>
 
 szStatusFmt dw '%','u',' ','i','t','e','m','s',0
-szUintFmt   dw '%','u',0
 szMBFmt     dw '%','u',' ','M','B',0
 szDateFmt   dw '%','0','4','u','-','%','0','2','u','-','%','0','2','u',' ','%','0','2','u',':','%','0','2','u',0
 szTitleFmt  dw 'F','o','x','I','m','g',' ','-',' ','%','s',0
@@ -418,7 +417,7 @@ UiInsertListItem PROC USES esi pNode:DWORD
             shrd eax, edx, 20
             invoke wsprintfW, addr szBuf, offset szMBFmt, eax
         .ELSE
-            invoke wsprintfW, addr szBuf, offset szUintFmt, [esi].NODE.dataSize
+            invoke wsprintfW, addr szBuf, offset g_szUintFmt, [esi].NODE.dataSize
         .ENDIF
         invoke SetSubItem, iItem, 1, addr szBuf
         invoke SetSubItem, iItem, 2, offset szTypeFile
@@ -429,7 +428,7 @@ UiInsertListItem PROC USES esi pNode:DWORD
 
     test [esi].NODE.nflags, NF_ISO
     .IF !ZERO?
-        invoke wsprintfW, addr szBuf, offset szUintFmt, [esi].NODE.isoExtent
+        invoke wsprintfW, addr szBuf, offset g_szUintFmt, [esi].NODE.isoExtent
         invoke SetSubItem, iItem, 4, addr szBuf
     .ELSE
         invoke SetSubItem, iItem, 4, offset szDash
@@ -462,17 +461,6 @@ UiFillListNode PROC USES esi pDirNode:DWORD
     invoke PreviewShow, 0
     ret
 UiFillListNode ENDP
-
-; Compatibility shim for older callers
-UiFillList PROC pDirRec:DWORD
-    invoke UiFillListNode, g_pCurDir
-    ret
-UiFillList ENDP
-
-UiFillTree PROC
-    invoke UiRefreshTree
-    ret
-UiFillTree ENDP
 
 UiListItemNode PROC iItem:DWORD
     LOCAL lvi:LVITEMW
