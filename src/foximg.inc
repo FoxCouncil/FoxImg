@@ -1125,6 +1125,19 @@ EXTERNDEF g_ctLbaBase:DWORD
 EXTERNDEF g_ctName:DWORD
 EXTERNDEF g_bContainer:DWORD
 
+; ---------------------------------------------------------------------------
+; Foreign disc filesystems (read-only): xdvdfs.asm, opera.asm
+; ---------------------------------------------------------------------------
+XdvdfsDetect        PROTO                       ; -> TRUE when an Xbox volume descriptor was found
+XdvdfsBuild         PROTO :DWORD                ; pRootNode
+XdvdfsClose         PROTO
+OperaDetect         PROTO
+OperaBuild          PROTO :DWORD
+OperaClose          PROTO
+EXTERNDEF g_bXdvdfs:DWORD
+EXTERNDEF g_bOpera:DWORD
+EXTERNDEF g_bCdi:DWORD
+
 ; main.asm commands callable from ui
 AppCommand          PROTO :DWORD                ; id
 IDM_REFRESH             equ 199

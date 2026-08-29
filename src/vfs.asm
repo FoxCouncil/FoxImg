@@ -313,6 +313,16 @@ VfsBuildFromIso PROC USES esi
     .ENDIF
     mov esi, eax
     invoke VfsDateNow, esi
+    ; foreign filesystems (Xbox, 3DO) have no ISO 9660 descriptors at all
+    .IF g_bXdvdfs != 0
+        invoke XdvdfsBuild, esi
+        mov g_bModified, FALSE
+        ret
+    .ELSEIF g_bOpera != 0
+        invoke OperaBuild, esi
+        mov g_bModified, FALSE
+        ret
+    .ENDIF
     ; UDF tree wins when present (Windows media keeps only a stub in the ISO 9660 half)
     invoke UdfOpen
     .IF eax != 0

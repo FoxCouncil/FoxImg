@@ -677,6 +677,256 @@ done:
 CtScan ENDP
 
 ; ---------------------------------------------------------------------------
+; ECM (Error Code Modeler): sectors stored without sync / EDC / ECC. Decoded once into %TEMP%\FoxImg\<name>.bin
+; as raw 2352-byte sectors (checksums are left zero; the readers never verify them), then opened like a BIN.
+; ---------------------------------------------------------------------------
+ECM_BUF         equ 1024 * 1024
+
+.data
+g_ecmFile       dd 0
+g_ecmIn         dd 0
+g_ecmInPos      dd 0
+g_ecmInLen      dd 0
+g_ecmEof        dd 0
+g_ecmOut        dd 0
+g_ecmOutPos     dd 0
+g_ecmHOut       dd 0
+szEcmTempFmt    dw '%','s','F','o','x','I','m','g','\','%','s','.','b','i','n',0
+szEcmDirFmt     dw '%','s','F','o','x','I','m','g',0
+szEcmSync       db 00h, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 00h
+WSTR szCtEcm, <ECM>
+WSTR szExtEcm, <.ecm>
+
+.code
+
+; Next input byte in eax, or 100h at end of input
+EcmByte PROC
+    LOCAL nRead:DWORD
+    mov eax, g_ecmInPos
+    .IF eax >= g_ecmInLen
+        .IF g_ecmEof != 0
+            mov eax, 100h
+            ret
+        .ENDIF
+        invoke ReadFile, g_ecmFile, g_ecmIn, ECM_BUF, addr nRead, NULL
+        .IF eax == 0 || nRead == 0
+            mov g_ecmEof, TRUE
+            mov eax, 100h
+            ret
+        .ENDIF
+        mov eax, nRead
+        mov g_ecmInLen, eax
+        mov g_ecmInPos, 0
+        xor eax, eax
+    .ENDIF
+    mov ecx, g_ecmIn
+    movzx eax, byte ptr [ecx + eax]
+    inc g_ecmInPos
+    ret
+EcmByte ENDP
+
+; Flush the output buffer to the temp file
+EcmFlush PROC
+    .IF g_ecmOutPos != 0
+        invoke WriteAll, g_ecmHOut, g_ecmOut, g_ecmOutPos
+        mov g_ecmOutPos, 0
+    .ENDIF
+    ret
+EcmFlush ENDP
+
+; Append cb bytes from pSrc (or zeros when pSrc == 0) to the output
+EcmPut PROC USES esi edi pSrc:DWORD, cb:DWORD
+    mov eax, g_ecmOutPos
+    add eax, cb
+    .IF eax > ECM_BUF
+        invoke EcmFlush
+    .ENDIF
+    mov edi, g_ecmOut
+    add edi, g_ecmOutPos
+    mov ecx, cb
+    .IF pSrc == 0
+        xor eax, eax
+        rep stosb
+    .ELSE
+        mov esi, pSrc
+        rep movsb
+    .ENDIF
+    mov eax, cb
+    add g_ecmOutPos, eax
+    ret
+EcmPut ENDP
+
+; Copy cb input bytes straight to the output; returns FALSE at end of input
+EcmCopy PROC USES ebx cb:DWORD
+    mov ebx, cb
+    .WHILE ebx != 0
+        invoke EcmByte
+        .IF eax == 100h
+            xor eax, eax
+            ret
+        .ENDIF
+        mov ecx, g_ecmOut
+        add ecx, g_ecmOutPos
+        .IF g_ecmOutPos >= ECM_BUF
+            push eax
+            invoke EcmFlush
+            pop eax
+            mov ecx, g_ecmOut
+        .ENDIF
+        mov [ecx], al
+        inc g_ecmOutPos
+        dec ebx
+    .ENDW
+    mov eax, TRUE
+    ret
+EcmCopy ENDP
+
+CtOpenEcm PROC USES esi edi ebx pszPath:DWORD
+    LOCAL szTemp[MAX_PATH]:WORD
+    LOCAL szDir[MAX_PATH]:WORD
+    LOCAL szOut[MAX_PATH]:WORD
+    LOCAL magic[4]:BYTE
+    LOCAL num:DWORD
+    LOCAL kind:DWORD
+    LOCAL shiftN:DWORD
+    LOCAL ok:DWORD
+    LOCAL sub4[4]:BYTE
+    LOCAL addr3[3]:BYTE
+    LOCAL nRead:DWORD
+
+    mov ok, FALSE
+    invoke CreateFileW, pszPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    .IF eax == INVALID_HANDLE_VALUE
+        ret
+    .ENDIF
+    mov g_ecmFile, eax
+    invoke ReadFile, g_ecmFile, addr magic, 4, addr nRead, NULL
+    .IF nRead != 4 || dword ptr magic[0] != 004D4345h     ; "ECM\0"
+        invoke CloseHandle, g_ecmFile
+        ret
+    .ENDIF
+
+    invoke GetTempPathW, MAX_PATH, addr szTemp
+    invoke wsprintfW, addr szDir, offset szEcmDirFmt, addr szTemp
+    invoke CreateDirectoryW, addr szDir, NULL
+    invoke PathLeaf, pszPath
+    invoke wsprintfW, addr szOut, offset szEcmTempFmt, addr szTemp, eax
+    invoke CreateFileW, addr szOut, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL
+    .IF eax == INVALID_HANDLE_VALUE
+        invoke CloseHandle, g_ecmFile
+        ret
+    .ENDIF
+    mov g_ecmHOut, eax
+    invoke VfsAlloc, ECM_BUF
+    mov g_ecmIn, eax
+    invoke VfsAlloc, ECM_BUF
+    mov g_ecmOut, eax
+    mov g_ecmInPos, 0
+    mov g_ecmInLen, 0
+    mov g_ecmEof, 0
+    mov g_ecmOutPos, 0
+    .IF g_ecmIn == 0 || g_ecmOut == 0
+        jmp cleanup
+    .ENDIF
+
+    ; records: varint header byte(s): bits 0-1 type, bits 2-6 count, bit 7 more
+    .WHILE TRUE
+        invoke EcmByte
+        .BREAK .IF eax == 100h
+        mov ecx, eax
+        and ecx, 3
+        mov kind, ecx
+        mov ecx, eax
+        shr ecx, 2
+        and ecx, 1Fh
+        mov num, ecx
+        mov shiftN, 5
+        .WHILE eax & 80h
+            invoke EcmByte
+            .BREAK .IF eax == 100h
+            mov ecx, eax
+            and ecx, 7Fh
+            push eax
+            mov eax, ecx
+            mov ecx, shiftN
+            .IF ecx < 32
+                shl eax, cl
+                or num, eax
+            .ENDIF
+            add shiftN, 7
+            pop eax
+        .ENDW
+        .BREAK .IF num == 0FFFFFFFFh         ; end marker
+        inc num                             ; stored count - 1
+        .IF kind == 0
+            invoke EcmCopy, num
+            .BREAK .IF eax == 0
+        .ELSE
+            .WHILE num != 0
+                invoke EcmPut, offset szEcmSync, 12
+                .IF kind == 1
+                    ; mode 1: address(3) + data(2048) stored
+                    invoke EcmCopy, 3
+                    .BREAK .IF eax == 0
+                    mov al, 1
+                    mov addr3[0], al
+                    invoke EcmPut, addr addr3, 1
+                    invoke EcmCopy, 2048
+                    .BREAK .IF eax == 0
+                    invoke EcmPut, NULL, 288
+                .ELSE
+                    ; mode 2: address regenerated (left zero), subheader half(4) stored twice, then data
+                    invoke EcmPut, NULL, 3
+                    mov addr3[0], 2
+                    invoke EcmPut, addr addr3, 1
+                    mov ecx, 4
+                    lea edi, sub4
+                    .WHILE ecx != 0
+                        push ecx
+                        invoke EcmByte
+                        pop ecx
+                        .IF eax == 100h
+                            jmp decode_done
+                        .ENDIF
+                        mov [edi], al
+                        inc edi
+                        dec ecx
+                    .ENDW
+                    invoke EcmPut, addr sub4, 4
+                    invoke EcmPut, addr sub4, 4
+                    .IF kind == 2
+                        invoke EcmCopy, 2048
+                        .BREAK .IF eax == 0
+                        invoke EcmPut, NULL, 280
+                    .ELSE
+                        invoke EcmCopy, 2324
+                        .BREAK .IF eax == 0
+                        invoke EcmPut, NULL, 4
+                    .ENDIF
+                .ENDIF
+                dec num
+            .ENDW
+        .ENDIF
+    .ENDW
+decode_done:
+    invoke EcmFlush
+    mov ok, TRUE
+cleanup:
+    invoke CloseHandle, g_ecmHOut
+    invoke CloseHandle, g_ecmFile
+    invoke VfsFreeMem, g_ecmIn
+    invoke VfsFreeMem, g_ecmOut
+    mov g_ecmIn, 0
+    mov g_ecmOut, 0
+    .IF ok != 0
+        invoke CtFinish, addr szOut, 0, 0, 0, 0, offset szCtEcm
+        mov ok, eax
+    .ENDIF
+    mov eax, ok
+    ret
+CtOpenEcm ENDP
+
+; ---------------------------------------------------------------------------
 ; Entry points
 ; ---------------------------------------------------------------------------
 CtReset PROC
@@ -726,6 +976,11 @@ CtResolve PROC pszPath:DWORD
     invoke HasExt, pszPath, offset szExtCdi
     .IF eax != 0
         invoke CtScan, pszPath
+        ret
+    .ENDIF
+    invoke HasExt, pszPath, offset szExtEcm
+    .IF eax != 0
+        invoke CtOpenEcm, pszPath
         ret
     .ENDIF
     xor eax, eax

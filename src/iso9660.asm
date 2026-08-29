@@ -29,8 +29,12 @@ g_bCue      dd 0            ; opened through a .cue sheet (g_szBinPath holds the
 g_dataBaseLo dd 0           ; byte offset of the data track inside the file (containers)
 g_dataBaseHi dd 0
 g_lbaBase   dd 0            ; LBA of the first block of the data track (Dreamcast: 45000)
+g_bCdi      dd 0            ; descriptors carry "CD-I " (Green Book) instead of "CD001"
 
 WSTR szFmtIso, <ISO 9660>
+WSTR szFmtCdi, <CD-i>
+WSTR szFmtXdvdfs, <XDVDFS (Xbox)>
+WSTR szFmtOpera, <Opera (3DO)>
 WSTR szFmtRaw2352, <RAW 2352 ISO 9660>
 WSTR szFmtRaw2336, <RAW 2336 ISO 9660>
 WSTR szFmtJoliet, < + Joliet>
@@ -139,6 +143,9 @@ IsoSectorPtr ENDP
 ; ---------------------------------------------------------------------------
 IsoClose PROC
     invoke UdfClose
+    invoke XdvdfsClose
+    invoke OperaClose
+    mov g_bCdi, 0
     .IF g_pView != 0
         invoke UnmapViewOfFile, g_pView
         mov g_pView, 0
@@ -304,7 +311,7 @@ retry_open:
     mov g_cbFileHi, eax
     .IF eax == 0
         mov ecx, g_cbFileLo
-        cmp ecx, (ISO_VD_FIRST + 1) * ISO_SECTOR
+        cmp ecx, ISO_SECTOR                 ; foreign filesystems can be tiny; ISO 9660 checks block 16 itself
         jb fail
     .ENDIF
 
@@ -336,9 +343,17 @@ vd_loop:
     jz vd_done
     mov esi, eax
     cmp dword ptr [esi + ISO_VD_ID], 30304443h  ; "CD00"
-    jne vd_done
+    jne vd_notiso
     cmp byte ptr [esi + ISO_VD_ID + 4], '1'
+    je vd_isiso
+vd_notiso:
+    ; Green Book (CD-i) discs use the same layout with a "CD-I " identifier
+    cmp dword ptr [esi + ISO_VD_ID], 492D4443h  ; "CD-I"
     jne vd_done
+    cmp byte ptr [esi + ISO_VD_ID + 4], ' '
+    jne vd_done
+    mov g_bCdi, TRUE
+vd_isiso:
     movzx eax, byte ptr [esi + ISO_VD_TYPE]
     .IF al == ISO_VD_TERMINATOR
         jmp vd_done
@@ -362,6 +377,16 @@ vd_loop:
 
 vd_done:
     .IF g_pvdLba == 0
+        ; not ISO 9660: Xbox or 3DO volumes have their own descriptors (read-only, saving converts)
+        invoke XdvdfsDetect
+        .IF eax == 0
+            invoke OperaDetect
+        .ENDIF
+        .IF eax != 0
+            mov g_bContainer, TRUE
+            mov eax, TRUE
+            ret
+        .ENDIF
         ; nothing at block 16: maybe the data track starts somewhere inside (CDI and friends)
         .IF g_bContainer == 0 && g_bCue == 0
             invoke UnmapViewOfFile, g_pView
@@ -648,7 +673,18 @@ IsoFormatName PROC pszBuf:DWORD
         lea ecx, [ecx + eax * 2]
         mov pszBuf, ecx
     .ENDIF
+    ; foreign filesystems: just their name
+    .IF g_bXdvdfs != 0
+        invoke lstrcpyW, pszBuf, offset szFmtXdvdfs
+        ret
+    .ELSEIF g_bOpera != 0
+        invoke lstrcpyW, pszBuf, offset szFmtOpera
+        ret
+    .ENDIF
     mov pBase, offset szFmtIso
+    .IF g_bCdi != 0
+        mov pBase, offset szFmtCdi
+    .ENDIF
     mov eax, g_fmt
     .IF eax == FMT_RAW2352_M1 || eax == FMT_RAW2352_M2
         mov pBase, offset szFmtRaw2352
