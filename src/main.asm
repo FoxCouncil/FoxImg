@@ -37,8 +37,9 @@ WSTR szNewFolderName, <New Folder>
 WSTR szNewFileName, <New File>
 
 szFilterOpen LABEL WORD
-    dw 'D','i','s','c',' ','I','m','a','g','e','s',' ','(','*','.','i','s','o',';','*','.','i','m','g',';','*','.','b','i','n',';','*','.','c','u','e',')',0
-    dw '*','.','i','s','o',';','*','.','i','m','g',';','*','.','b','i','n',';','*','.','c','u','e',0
+    dw 'D','i','s','c',' ','I','m','a','g','e','s',0
+    dw '*','.','i','s','o',';','*','.','i','m','g',';','*','.','b','i','n',';','*','.','c','u','e',';'
+    dw '*','.','n','r','g',';','*','.','m','d','s',';','*','.','c','c','d',';','*','.','g','d','i',';','*','.','t','o','c',';','*','.','c','d','i',0
     dw 'A','l','l',' ','F','i','l','e','s',' ','(','*','.','*',')',0
     dw '*','.','*',0
     dw 0
@@ -377,7 +378,8 @@ CmdSaveAs PROC
 CmdSaveAs ENDP
 
 CmdSave PROC
-    .IF g_bHavePath != 0
+    ; containers (NRG, MDS, ...) are read-only inputs: saving means choosing an output image
+    .IF g_bHavePath != 0 && g_bContainer == 0
         invoke SaveBegin, offset g_szPath
     .ELSE
         invoke CmdSaveAs

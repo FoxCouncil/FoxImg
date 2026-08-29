@@ -26,6 +26,9 @@ g_secOff    dd 0            ; offset of the 2048 user bytes inside a physical se
 g_nSectors  dd 0
 g_fmt       dd 0            ; FMT_*
 g_bCue      dd 0            ; opened through a .cue sheet (g_szBinPath holds the data file)
+g_dataBaseLo dd 0           ; byte offset of the data track inside the file (containers)
+g_dataBaseHi dd 0
+g_lbaBase   dd 0            ; LBA of the first block of the data track (Dreamcast: 45000)
 
 szDateFmt   dw '%','0','4','u','-','%','0','2','u','-','%','0','2','u',' ','%','0','2','u',':','%','0','2','u',0
 WSTR szExtCue, <.cue>
@@ -34,6 +37,7 @@ WSTR szFmtRaw2352, <RAW 2352 ISO 9660>
 WSTR szFmtRaw2336, <RAW 2336 ISO 9660>
 WSTR szFmtJoliet, < + Joliet>
 szFmtUdf    dw ' ','+',' ','U','D','F',' ','%','u','.','%','0','2','u',0
+szCtPrefixFmt dw '%','s',':',' ',0
 szCatFmt    dw '%','s','%','s',0
 szKwFile    db 'FILE', 0
 szKwTrack   db 'TRACK', 0
@@ -48,6 +52,9 @@ g_szBinPath dw MAX_PATH dup(?)
 g_cueFmt    dd ?            ; -1 = not specified by the sheet
 
 .code
+
+IsoCountSectors PROTO
+IsoSetGeometry  PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD
 
 ; ---------------------------------------------------------------------------
 ; Window management
@@ -85,19 +92,23 @@ IsoMapWindow PROC baseLo:DWORD, baseHi:DWORD
 IsoMapWindow ENDP
 
 ; Pointer to the 2048 user bytes of logical block lba, or 0 when out of range. Remaps as needed.
+; Byte offset = (lba - g_lbaBase) * secSize + secOff + g_dataBase (a container's data track may start anywhere).
 IsoSectorPtr PROC lba:DWORD
     LOCAL offLo:DWORD
     LOCAL offHi:DWORD
     LOCAL baseLo:DWORD
     LOCAL baseHi:DWORD
     mov eax, lba
-    .IF eax >= g_nSectors
+    .IF eax >= g_nSectors || eax < g_lbaBase
         xor eax, eax
         ret
     .ENDIF
-    mul g_secSize                           ; edx:eax = lba * secSize
+    sub eax, g_lbaBase
+    mul g_secSize                           ; edx:eax = block * secSize
     add eax, g_secOff
     adc edx, 0
+    add eax, g_dataBaseLo
+    adc edx, g_dataBaseHi
     mov offLo, eax
     mov offHi, edx
 
@@ -161,6 +172,10 @@ IsoClose PROC
     mov g_secOff, 0
     mov g_fmt, FMT_ISO
     mov g_bCue, 0
+    mov g_dataBaseLo, 0
+    mov g_dataBaseHi, 0
+    mov g_lbaBase, 0
+    invoke CtReset
     ret
 IsoClose ENDP
 
@@ -341,12 +356,51 @@ IsoSetFormat PROC fmt:DWORD
         mov g_secSize, 2048
         mov g_secOff, 0
     .ENDIF
-    mov edx, g_cbFileHi
-    mov eax, g_cbFileLo
-    div g_secSize                           ; file size / sector size (high part is always < 2352)
-    mov g_nSectors, eax
+    invoke IsoCountSectors
     ret
 IsoSetFormat ENDP
+
+; g_nSectors = (file size - data base) / sector size + lba base
+IsoCountSectors PROC
+    mov eax, g_cbFileLo
+    mov edx, g_cbFileHi
+    sub eax, g_dataBaseLo
+    sbb edx, g_dataBaseHi
+    .IF edx > 0FFFFh                        ; keep the divide in range (files under 16 TB)
+        mov edx, 0FFFFh
+    .ENDIF
+    div g_secSize
+    add eax, g_lbaBase
+    mov g_nSectors, eax
+    ret
+IsoCountSectors ENDP
+
+; Geometry dictated by a container
+IsoSetGeometry PROC secSize:DWORD, secOff:DWORD, baseLo:DWORD, baseHi:DWORD, lbaBase:DWORD
+    mov eax, secSize
+    mov g_secSize, eax
+    mov eax, secOff
+    mov g_secOff, eax
+    mov eax, baseLo
+    mov g_dataBaseLo, eax
+    mov eax, baseHi
+    mov g_dataBaseHi, eax
+    mov eax, lbaBase
+    mov g_lbaBase, eax
+    mov g_fmt, FMT_ISO
+    .IF secSize == 2352
+        mov g_fmt, FMT_RAW2352_M1
+        .IF secOff == 24
+            mov g_fmt, FMT_RAW2352_M2
+        .ENDIF
+    .ELSEIF secSize == 2336
+        mov g_fmt, FMT_RAW2336
+    .ELSEIF secSize != 2048
+        mov g_fmt, FMT_RAW2352_M1           ; 2448 / 2368 with subchannel: report as raw
+    .ENDIF
+    invoke IsoCountSectors
+    ret
+IsoSetGeometry ENDP
 
 ; Raw 2352-byte sectors? Looks at the first sector of the (already mapped, offset 0) window. Returns FMT_* or -1.
 IsoSniff PROC USES esi
@@ -409,10 +463,17 @@ IsoOpen PROC USES esi edi ebx pszPath:DWORD
         .ENDIF
     .ENDIF
     .IF pData == 0
-        mov eax, pszPath
-        mov pData, eax
+        ; NRG / MDS / CCD / GDI / TOC / CDI: the container names the data file and its geometry
+        invoke CtResolve, pszPath
+        .IF eax != 0
+            mov pData, offset g_szBinPath
+        .ELSE
+            mov eax, pszPath
+            mov pData, eax
+        .ENDIF
     .ENDIF
 
+retry_open:
     invoke CreateFileW, pData, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL
     .IF eax == INVALID_HANDLE_VALUE
         xor eax, eax
@@ -441,14 +502,18 @@ IsoOpen PROC USES esi edi ebx pszPath:DWORD
         jmp fail
     .ENDIF
 
-    mov eax, g_cueFmt
-    .IF eax == -1
-        invoke IsoSniff
+    .IF g_bContainer != 0
+        invoke IsoSetGeometry, g_ctSecSize, g_ctSecOff, g_ctBaseLo, g_ctBaseHi, g_ctLbaBase
+    .ELSE
+        mov eax, g_cueFmt
+        .IF eax == -1
+            invoke IsoSniff
+        .ENDIF
+        .IF eax == -1
+            mov eax, FMT_ISO
+        .ENDIF
+        invoke IsoSetFormat, eax
     .ENDIF
-    .IF eax == -1
-        mov eax, FMT_ISO
-    .ENDIF
-    invoke IsoSetFormat, eax
 
     ; Walk the volume descriptor set starting at block 16 until the terminator.
     mov ebx, ISO_VD_FIRST
@@ -484,6 +549,20 @@ vd_loop:
 
 vd_done:
     .IF g_pvdLba == 0
+        ; nothing at block 16: maybe the data track starts somewhere inside (CDI and friends)
+        .IF g_bContainer == 0 && g_bCue == 0
+            invoke UnmapViewOfFile, g_pView
+            mov g_pView, 0
+            invoke CloseHandle, g_hMap
+            mov g_hMap, 0
+            invoke CloseHandle, g_hFile
+            mov g_hFile, 0
+            invoke CtResolveByScan, pszPath
+            .IF eax != 0
+                mov pData, offset g_szBinPath
+                jmp retry_open
+            .ENDIF
+        .ENDIF
         jmp fail
     .ENDIF
     .IF g_svdLba != 0
@@ -746,6 +825,16 @@ IsoVolumeName ENDP
 ; "ISO 9660 + Joliet", "RAW 2352 ISO 9660" ...
 IsoFormatName PROC pszBuf:DWORD
     LOCAL pBase:DWORD
+    ; "NRG: " prefix when read through a container
+    mov eax, pszBuf
+    mov word ptr [eax], 0
+    .IF g_ctName != 0
+        invoke wsprintfW, pszBuf, offset szCtPrefixFmt, g_ctName
+        invoke lstrlenW, pszBuf
+        mov ecx, pszBuf
+        lea ecx, [ecx + eax * 2]
+        mov pszBuf, ecx
+    .ENDIF
     mov pBase, offset szFmtIso
     mov eax, g_fmt
     .IF eax == FMT_RAW2352_M1 || eax == FMT_RAW2352_M2

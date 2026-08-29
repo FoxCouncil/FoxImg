@@ -178,9 +178,9 @@ UiUpdateDpi PROC USES ebx hParent:DWORD, dpi:DWORD
 
     invoke SendMessageW, g_hTree, WM_SETFONT, g_hFont, TRUE
     invoke SendMessageW, g_hList, WM_SETFONT, g_hFont, TRUE
-    invoke SendMessageW, g_hStatus, WM_SETFONT, g_hFont, TRUE
+    invoke PreviewSetFont                   ; rebuilds the monospace font for this DPI
+    invoke SendMessageW, g_hStatus, WM_SETFONT, g_hFontMono, TRUE
     invoke UiSetStatusParts
-    invoke PreviewSetFont
 
     xor ebx, ebx
     .WHILE ebx < NUM_COLUMNS

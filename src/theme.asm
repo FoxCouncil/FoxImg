@@ -435,7 +435,7 @@ ThemeDrawStatus PROC USES esi pDIS:DWORD
     invoke FillRect, [esi].DRAWITEMSTRUCT.hDC, addr [esi].DRAWITEMSTRUCT.rcItem, g_hbrStatus
     invoke SetBkMode, [esi].DRAWITEMSTRUCT.hDC, TRANSPARENT
     invoke SetTextColor, [esi].DRAWITEMSTRUCT.hDC, DARK_TEXT
-    invoke SelectObject, [esi].DRAWITEMSTRUCT.hDC, g_hFont
+    invoke SelectObject, [esi].DRAWITEMSTRUCT.hDC, g_hFontMono
     mov eax, [esi].DRAWITEMSTRUCT.rcItem.left
     add eax, 4
     mov rc.left, eax

@@ -872,6 +872,7 @@ PreviewSetFont      PROTO                       ; after DPI change
 PreviewCtlColor     PROTO :DWORD,:DWORD         ; hdc, hwndCtl -> brush or 0
 EXTERNDEF g_bPreview:DWORD
 EXTERNDEF g_hEdit:DWORD
+EXTERNDEF g_hFontMono:DWORD                 ; Consolas at the current DPI (preview text and status bar)
 
 ; ui.asm (editing)
 UiRefreshTree       PROTO                       ; rebuild tree from model, keep current dir
@@ -1109,6 +1110,20 @@ FID_DIR_FLAG        equ 02h
 FID_PARENT_DIR      equ 0Ah
 EXTERNDEF g_progDoneHi:DWORD
 EXTERNDEF g_progTotalHi:DWORD
+
+; ---------------------------------------------------------------------------
+; Optical containers (container.asm): NRG, MDS/MDF, CCD/IMG, GDI, TOC, generic scan
+; ---------------------------------------------------------------------------
+CtResolve           PROTO :DWORD                ; pszPath -> TRUE when recognised (geometry + g_szBinPath set)
+CtResolveByScan     PROTO :DWORD                ; pszPath -> TRUE when an ISO 9660 descriptor was found inside
+CtReset             PROTO
+EXTERNDEF g_ctBaseLo:DWORD
+EXTERNDEF g_ctBaseHi:DWORD
+EXTERNDEF g_ctSecSize:DWORD
+EXTERNDEF g_ctSecOff:DWORD
+EXTERNDEF g_ctLbaBase:DWORD
+EXTERNDEF g_ctName:DWORD
+EXTERNDEF g_bContainer:DWORD
 
 ; main.asm commands callable from ui
 AppCommand          PROTO :DWORD                ; id
