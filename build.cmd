@@ -22,7 +22,7 @@ if /i "%1"=="debug" (
 if not exist build mkdir build
 
 set OBJS=
-for %%f in (main ui iso9660 theme vfs isowrite preview eltorito dragdrop worker udf udfwrite container strutil xdvdfs opera) do (
+for %%f in (main ui iso9660 theme vfs isowrite preview eltorito dragdrop worker udf udfwrite container strutil xdvdfs opera deflate) do (
     ml %MLFLAGS% /Fo build\%%f.obj src\%%f.asm || exit /b 1
     set OBJS=!OBJS! build\%%f.obj
 )

@@ -11,6 +11,7 @@ includelib comdlg32.lib
 includelib advapi32.lib
 includelib dwmapi.lib
 includelib uxtheme.lib
+includelib ntdll.lib
 
 ; ---------------------------------------------------------------------------
 ; Macros
@@ -1110,6 +1111,16 @@ FID_DIR_FLAG        equ 02h
 FID_PARENT_DIR      equ 0Ah
 EXTERNDEF g_progDoneHi:DWORD
 EXTERNDEF g_progTotalHi:DWORD
+
+; ---------------------------------------------------------------------------
+; DEFLATE codec (deflate.asm): inflate + fixed-Huffman compress, gzip / zip / CSO wrappers
+; ---------------------------------------------------------------------------
+RtlComputeCrc32     PROTO :DWORD,:DWORD,:DWORD  ; seed, pData, cb -> running CRC-32 (ntdll)
+GzExpandFile        PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL (CRC verified)
+ZipExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, largest stored/deflated entry
+CsoExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, CISO v0/v1
+GzCompressFile      PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL; worker progress + Cancel
+EXTERNDEF g_saveGzip:DWORD                      ; save target ends in .gz: worker gzips the image
 
 ; ---------------------------------------------------------------------------
 ; Optical containers (container.asm): NRG, MDS/MDF, CCD/IMG, GDI, TOC, generic scan

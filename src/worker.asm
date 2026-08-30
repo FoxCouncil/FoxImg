@@ -32,6 +32,7 @@ WSTR szJobSave, <Writing image>
 WSTR szJobExtract, <Extracting>
 WSTR szJobAdd, <Adding files>
 WSTR szCancelling, <Cancelling...>
+WSTR szGzSuffix, <.gz>
 szPctFmt        dw '%','s','.','.','.',' ',' ','%','u','%','%',0
 szDotsFmt       dw '%','s','.','.','.',0
 
@@ -397,11 +398,25 @@ JobStartAdd ENDP
 ; ---------------------------------------------------------------------------
 JobThreadProc PROC USES esi ebx lpParam:DWORD
     LOCAL result:DWORD
+    LOCAL szGz[MAX_PATH + 8]:WORD
     mov result, FALSE
     mov eax, g_jobKind
     .IF eax == JOB_SAVE
         invoke IsoWrite, offset g_jobPath
         mov result, eax
+        .IF eax != 0 && g_saveGzip != 0
+            ; second pass: gzip the finished image beside itself, then take its place
+            invoke wsprintfW, addr szGz, offset g_szCatFmt, offset g_jobPath, offset szGzSuffix
+            invoke GzCompressFile, offset g_jobPath, addr szGz
+            .IF eax != 0
+                invoke DeleteFileW, offset g_jobPath
+                invoke MoveFileExW, addr szGz, offset g_jobPath, MOVEFILE_REPLACE_EXISTING
+                mov result, eax
+            .ELSE
+                invoke DeleteFileW, addr szGz
+                mov result, FALSE
+            .ENDIF
+        .ENDIF
     .ELSEIF eax == JOB_EXTRACT
         mov result, TRUE
         xor ebx, ebx

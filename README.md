@@ -13,7 +13,7 @@ The program is one small executable with no runtime dependencies.
 - Browse an image as a folder tree with a file list, preview pane, and status bar.
 - Add, rename, move, and delete files and folders inside an image.
 - Drag and drop in both directions: from Explorer into the image, and from the image to Explorer.
-- Save or convert any open image to ISO 9660 + Joliet + UDF 1.02, or to BIN/CUE.
+- Save or convert any open image to ISO 9660 + Joliet + UDF 1.02, to BIN/CUE, or to a gzip-compressed ISO.
 - Keep El Torito boot records through a save. BIOS and UEFI entries survive, and
   isolinux/GRUB boot info tables are patched for the new layout.
 - Open images of any size. A sliding 64 MB mapping window keeps memory use flat.
@@ -41,9 +41,47 @@ The program is one small executable with no runtime dependencies.
 | Xbox / Xbox 360 | .iso (XDVDFS) | Yes | No | XISO and all redump partition offsets |
 | 3DO | .iso .cue (Opera) | Yes | No | Volume label, directory chains, copies |
 | CD-i | .iso .bin | Yes | No | Green Book descriptors beside CD001 |
+| gzip | .iso.gz .gz | Yes | Yes | Any image inside; Save As writes a gzip ISO |
+| zip | .zip | Yes | No | Largest stored or deflated entry, CRC verified |
+| CSO / CISO | .cso .ciso | Yes | No | v0/v1 deflate blocks (PSP, Dreamcast tooling) |
+| ZSO | .zso | Planned | No | CISO layout with LZ4 blocks |
+| DAX | .dax | Planned | No | PSP, deflate frames |
+| JSO | .jso | Planned | No | PSP, deflate blocks |
+| PBP | .pbp | Planned | No | PSP EBOOT with the ISO inside DATA.PSAR |
+| CHD | .chd | Planned | No | MAME: zlib / LZMA / FLAC hunks |
+| GCZ | .gcz | Planned | No | Dolphin, deflate blocks |
+| WIA / RVZ | .wia .rvz | Planned | No | Dolphin: zstd / bzip2 / LZMA |
+| WBFS | .wbfs | Planned | No | Wii backup file system |
+| GCM | .gcm | Planned | No | GameCube plain image |
+| NKit | .nkit.iso | Planned | No | Wii / GameCube |
+| ISZ | .isz | Planned | No | UltraISO: zlib / bzip2 chunks |
+| DAA | .daa | Planned | No | PowerISO: deflate / LZMA chunks |
+| UIF | .uif | Planned | No | MagicISO |
+| BlindWrite | .b5t .b6t .bwt | Planned | No | |
+| C2D | .c2d | Planned | No | WinOnCD |
+| PDI | .pdi | Planned | No | Instant CD/DVD |
+| DMG | .dmg | Planned | No | Apple: zlib / ADC chunks |
 | Unknown containers | any | Yes | No | Signature scan finds an ISO 9660 volume at any offset |
 
-Read-only formats convert on save: open the image, then save it as ISO or BIN/CUE.
+Read-only formats convert on save: open the image, then save it as ISO, BIN/CUE, or gzip ISO.
+
+## Compression
+
+The exe carries its own DEFLATE (RFC 1951) codec - an inflate decoder and a fixed-Huffman
+compressor - because the built-in Windows compression APIs only speak their own framings
+(MSZIP, XPRESS, LZMS), not the raw deflate streams these files hold. CRC-32 comes from
+ntdll, so no table lives in the image. Compressed images expand once to `%TEMP%\FoxImg\`
+and then open like any other image, the same way ECM does.
+
+| Codec | Status | Used by |
+| --- | --- | --- |
+| DEFLATE (inflate) | Yes | .gz, .zip, .cso; later ISZ, DAA, GCZ, JSO, DAX, PBP, CHD |
+| DEFLATE (compress) | Yes | Save As gzip ISO (fixed Huffman, 32 KB window) |
+| LZMA | Planned | DAA, ISZ, CHD, RVZ |
+| bzip2 | Planned | ISZ, RVZ |
+| zstd | Planned | RVZ |
+| LZ4 | Planned | ZSO |
+| FLAC | Planned | CHD audio tracks |
 
 ## Download
 

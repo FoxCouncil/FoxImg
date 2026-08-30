@@ -781,6 +781,18 @@ EcmCopy PROC USES ebx cb:DWORD
     ret
 EcmCopy ENDP
 
+; Build %TEMP%\FoxImg\<leaf>.bin and make sure the directory exists
+CtTempOut PROC pszOut:DWORD, pszPath:DWORD
+    LOCAL szTemp[MAX_PATH]:WORD
+    LOCAL szDir[MAX_PATH]:WORD
+    invoke GetTempPathW, MAX_PATH, addr szTemp
+    invoke wsprintfW, addr szDir, offset szEcmDirFmt, addr szTemp
+    invoke CreateDirectoryW, addr szDir, NULL
+    invoke PathLeaf, pszPath
+    invoke wsprintfW, pszOut, offset szEcmTempFmt, addr szTemp, eax
+    ret
+CtTempOut ENDP
+
 CtOpenEcm PROC USES esi edi ebx pszPath:DWORD
     LOCAL szTemp[MAX_PATH]:WORD
     LOCAL szDir[MAX_PATH]:WORD
@@ -927,6 +939,54 @@ cleanup:
 CtOpenEcm ENDP
 
 ; ---------------------------------------------------------------------------
+; Compressed containers: expanded once into %TEMP%\FoxImg\<name>.bin by deflate.asm,
+; then opened like any raw image (sector size sniffed by CtFinish).
+; ---------------------------------------------------------------------------
+.data
+WSTR szCtGz, <GZIP>
+WSTR szCtZip, <ZIP>
+WSTR szCtCso, <CSO>
+WSTR szExtGz, <.gz>
+WSTR szExtZip, <.zip>
+WSTR szExtCso, <.cso>
+WSTR szExtCiso, <.ciso>
+
+.code
+
+CtOpenGz PROC pszPath:DWORD
+    LOCAL szOut[MAX_PATH]:WORD
+    invoke CtTempOut, addr szOut, pszPath
+    invoke GzExpandFile, pszPath, addr szOut
+    .IF eax == 0
+        ret
+    .ENDIF
+    invoke CtFinish, addr szOut, 0, 0, 0, 0, offset szCtGz
+    ret
+CtOpenGz ENDP
+
+CtOpenZip PROC pszPath:DWORD
+    LOCAL szOut[MAX_PATH]:WORD
+    invoke CtTempOut, addr szOut, pszPath
+    invoke ZipExpandFile, pszPath, addr szOut
+    .IF eax == 0
+        ret
+    .ENDIF
+    invoke CtFinish, addr szOut, 0, 0, 0, 0, offset szCtZip
+    ret
+CtOpenZip ENDP
+
+CtOpenCso PROC pszPath:DWORD
+    LOCAL szOut[MAX_PATH]:WORD
+    invoke CtTempOut, addr szOut, pszPath
+    invoke CsoExpandFile, pszPath, addr szOut
+    .IF eax == 0
+        ret
+    .ENDIF
+    invoke CtFinish, addr szOut, 0, 0, 0, 0, offset szCtCso
+    ret
+CtOpenCso ENDP
+
+; ---------------------------------------------------------------------------
 ; Entry points
 ; ---------------------------------------------------------------------------
 CtReset PROC
@@ -981,6 +1041,26 @@ CtResolve PROC pszPath:DWORD
     invoke HasExt, pszPath, offset szExtEcm
     .IF eax != 0
         invoke CtOpenEcm, pszPath
+        ret
+    .ENDIF
+    invoke HasExt, pszPath, offset szExtGz
+    .IF eax != 0
+        invoke CtOpenGz, pszPath
+        ret
+    .ENDIF
+    invoke HasExt, pszPath, offset szExtZip
+    .IF eax != 0
+        invoke CtOpenZip, pszPath
+        ret
+    .ENDIF
+    invoke HasExt, pszPath, offset szExtCso
+    .IF eax != 0
+        invoke CtOpenCso, pszPath
+        ret
+    .ENDIF
+    invoke HasExt, pszPath, offset szExtCiso
+    .IF eax != 0
+        invoke CtOpenCso, pszPath
         ret
     .ENDIF
     xor eax, eax

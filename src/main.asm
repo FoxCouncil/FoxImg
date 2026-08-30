@@ -8,6 +8,7 @@ g_hInst     dd 0
 g_hWnd      dd 0
 g_hAccel    dd 0
 g_saveIsCue dd 0
+g_saveGzip  dd 0
 
 WSTR szClassName, <FoxImgMain>
 WSTR szTitle, <FoxImg>
@@ -32,6 +33,7 @@ WSTR szAdded, <Files added>
 WSTR szExtIso, <iso>
 WSTR szExtCueDot, <.cue>
 WSTR szExtBinDot, <.bin>
+WSTR szExtGzDot, <.gz>
 WSTR szTmpSuffix, <.tmp>
 WSTR szNewFolderName, <New Folder>
 WSTR szNewFileName, <New File>
@@ -39,7 +41,8 @@ WSTR szNewFileName, <New File>
 szFilterOpen LABEL WORD
     dw 'D','i','s','c',' ','I','m','a','g','e','s',0
     dw '*','.','i','s','o',';','*','.','i','m','g',';','*','.','b','i','n',';','*','.','c','u','e',';'
-    dw '*','.','n','r','g',';','*','.','m','d','s',';','*','.','c','c','d',';','*','.','g','d','i',';','*','.','t','o','c',';','*','.','c','d','i',0
+    dw '*','.','n','r','g',';','*','.','m','d','s',';','*','.','c','c','d',';','*','.','g','d','i',';','*','.','t','o','c',';','*','.','c','d','i',';'
+    dw '*','.','e','c','m',';','*','.','g','z',';','*','.','z','i','p',';','*','.','c','s','o',';','*','.','c','i','s','o',0
     dw 'A','l','l',' ','F','i','l','e','s',' ','(','*','.','*',')',0
     dw '*','.','*',0
     dw 0
@@ -50,6 +53,8 @@ szFilterSave LABEL WORD
     dw '*','.','i','m','g',0
     dw 'B','I','N','/','C','U','E',' ','(','*','.','b','i','n',')',0
     dw '*','.','b','i','n',0
+    dw 'g','z','i','p',' ','I','S','O',' ','(','*','.','i','s','o','.','g','z',')',0
+    dw '*','.','g','z',0
     dw 0
 szFilterAll LABEL WORD
     dw 'A','l','l',' ','F','i','l','e','s',' ','(','*','.','*',')',0
@@ -189,6 +194,7 @@ SaveBegin PROC pszTarget:DWORD
     LOCAL szTarget[MAX_PATH]:WORD
     invoke lstrcpynW, addr szTarget, pszTarget, MAX_PATH
     mov g_saveIsCue, FALSE
+    mov g_saveGzip, FALSE
     invoke PathExt, addr szTarget
     push eax
     invoke lstrcmpiW, eax, offset szExtCueDot
@@ -204,6 +210,11 @@ SaveBegin PROC pszTarget:DWORD
             invoke lstrcpynW, offset g_saveData, addr szTarget, MAX_PATH
             invoke PathWithExt, offset g_saveCue, addr szTarget, offset szExtCueDot
         .ELSE
+            invoke PathExt, addr szTarget
+            invoke lstrcmpiW, eax, offset szExtGzDot
+            .IF eax == 0
+                mov g_saveGzip, TRUE
+            .ENDIF
             invoke lstrcpynW, offset g_saveData, addr szTarget, MAX_PATH
         .ENDIF
     .ENDIF
