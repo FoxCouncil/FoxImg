@@ -950,6 +950,10 @@ WSTR szExtGz, <.gz>
 WSTR szExtZip, <.zip>
 WSTR szExtCso, <.cso>
 WSTR szExtCiso, <.ciso>
+WSTR szCtGcz, <GCZ>
+WSTR szCtDax, <DAX>
+WSTR szExtGcz, <.gcz>
+WSTR szExtDax, <.dax>
 
 .code
 
@@ -985,6 +989,28 @@ CtOpenCso PROC pszPath:DWORD
     invoke CtFinish, addr szOut, 0, 0, 0, 0, offset szCtCso
     ret
 CtOpenCso ENDP
+
+CtOpenGcz PROC pszPath:DWORD
+    LOCAL szOut[MAX_PATH]:WORD
+    invoke CtTempOut, addr szOut, pszPath
+    invoke GczExpandFile, pszPath, addr szOut
+    .IF eax == 0
+        ret
+    .ENDIF
+    invoke CtFinish, addr szOut, 0, 0, 2048, 0, offset szCtGcz
+    ret
+CtOpenGcz ENDP
+
+CtOpenDax PROC pszPath:DWORD
+    LOCAL szOut[MAX_PATH]:WORD
+    invoke CtTempOut, addr szOut, pszPath
+    invoke DaxExpandFile, pszPath, addr szOut
+    .IF eax == 0
+        ret
+    .ENDIF
+    invoke CtFinish, addr szOut, 0, 0, 2048, 0, offset szCtDax
+    ret
+CtOpenDax ENDP
 
 ; ---------------------------------------------------------------------------
 ; Entry points
@@ -1061,6 +1087,16 @@ CtResolve PROC pszPath:DWORD
     invoke HasExt, pszPath, offset szExtCiso
     .IF eax != 0
         invoke CtOpenCso, pszPath
+        ret
+    .ENDIF
+    invoke HasExt, pszPath, offset szExtGcz
+    .IF eax != 0
+        invoke CtOpenGcz, pszPath
+        ret
+    .ENDIF
+    invoke HasExt, pszPath, offset szExtDax
+    .IF eax != 0
+        invoke CtOpenDax, pszPath
         ret
     .ENDIF
     xor eax, eax

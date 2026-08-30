@@ -35,6 +35,7 @@ WSTR szFmtIso, <ISO 9660>
 WSTR szFmtCdi, <CD-i>
 WSTR szFmtXdvdfs, <XDVDFS (Xbox)>
 WSTR szFmtOpera, <Opera (3DO)>
+WSTR szFmtGcm, <GCM (GameCube)>
 WSTR szFmtRaw2352, <RAW 2352 ISO 9660>
 WSTR szFmtRaw2336, <RAW 2336 ISO 9660>
 WSTR szFmtJoliet, < + Joliet>
@@ -145,6 +146,7 @@ IsoClose PROC
     invoke UdfClose
     invoke XdvdfsClose
     invoke OperaClose
+    invoke GcClose
     mov g_bCdi, 0
     .IF g_pView != 0
         invoke UnmapViewOfFile, g_pView
@@ -382,6 +384,9 @@ vd_done:
         .IF eax == 0
             invoke OperaDetect
         .ENDIF
+        .IF eax == 0
+            invoke GcDetect
+        .ENDIF
         .IF eax != 0
             mov g_bContainer, TRUE
             mov eax, TRUE
@@ -498,9 +503,13 @@ IsoEnumDir ENDP
 ; ---------------------------------------------------------------------------
 ; Extent access (block-wise, so raw images and window remaps work)
 ; ---------------------------------------------------------------------------
-IsoCopyExtent PROC USES ebx lba:DWORD, cb:DWORD, hOut:DWORD
+; Byte-granular copy: data may start byteRem bytes into the first block (GameCube packs files unaligned)
+IsoCopyBytes PROC USES ebx lba:DWORD, byteRem:DWORD, cb:DWORD, hOut:DWORD
     LOCAL blk:DWORD
+    LOCAL rem:DWORD
     mov blk, 0
+    mov eax, byteRem
+    mov rem, eax
     .WHILE cb != 0
         mov eax, lba
         add eax, blk
@@ -509,24 +518,30 @@ IsoCopyExtent PROC USES ebx lba:DWORD, cb:DWORD, hOut:DWORD
             xor eax, eax
             ret
         .ENDIF
-        mov ebx, cb
-        .IF ebx > ISO_SECTOR
-            mov ebx, ISO_SECTOR
+        add eax, rem
+        mov ebx, ISO_SECTOR
+        sub ebx, rem
+        .IF ebx > cb
+            mov ebx, cb
         .ENDIF
         invoke WriteAll, hOut, eax, ebx
         .IF eax == 0
             ret
         .ENDIF
         sub cb, ebx
+        mov rem, 0
         inc blk
     .ENDW
     mov eax, TRUE
     ret
-IsoCopyExtent ENDP
+IsoCopyBytes ENDP
 
-IsoReadExtent PROC USES ebx edi lba:DWORD, cb:DWORD, pDst:DWORD
+IsoReadBytes PROC USES ebx edi lba:DWORD, byteRem:DWORD, cb:DWORD, pDst:DWORD
     LOCAL blk:DWORD
+    LOCAL rem:DWORD
     mov blk, 0
+    mov eax, byteRem
+    mov rem, eax
     mov edi, pDst
     .WHILE cb != 0
         mov eax, lba
@@ -536,16 +551,29 @@ IsoReadExtent PROC USES ebx edi lba:DWORD, cb:DWORD, pDst:DWORD
             xor eax, eax
             ret
         .ENDIF
-        mov ebx, cb
-        .IF ebx > ISO_SECTOR
-            mov ebx, ISO_SECTOR
+        add eax, rem
+        mov ebx, ISO_SECTOR
+        sub ebx, rem
+        .IF ebx > cb
+            mov ebx, cb
         .ENDIF
         invoke RtlMoveMemory, edi, eax, ebx
         add edi, ebx
         sub cb, ebx
+        mov rem, 0
         inc blk
     .ENDW
     mov eax, TRUE
+    ret
+IsoReadBytes ENDP
+
+IsoCopyExtent PROC lba:DWORD, cb:DWORD, hOut:DWORD
+    invoke IsoCopyBytes, lba, 0, cb, hOut
+    ret
+IsoCopyExtent ENDP
+
+IsoReadExtent PROC lba:DWORD, cb:DWORD, pDst:DWORD
+    invoke IsoReadBytes, lba, 0, cb, pDst
     ret
 IsoReadExtent ENDP
 
@@ -679,6 +707,9 @@ IsoFormatName PROC pszBuf:DWORD
         ret
     .ELSEIF g_bOpera != 0
         invoke lstrcpyW, pszBuf, offset szFmtOpera
+        ret
+    .ELSEIF g_bGcm != 0
+        invoke lstrcpyW, pszBuf, offset szFmtGcm
         ret
     .ENDIF
     mov pBase, offset szFmtIso

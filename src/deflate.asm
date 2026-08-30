@@ -1543,4 +1543,333 @@ cleanup:
     ret
 GzCompressFile ENDP
 
+; ---------------------------------------------------------------------------
+; zlib wrapper (RFC 1950): 2-byte header, deflate stream, Adler-32 (not verified)
+; ---------------------------------------------------------------------------
+ZfZlibInflate PROC
+    invoke ZfBits, 8                        ; CMF: low nibble must be deflate
+    mov ecx, eax
+    and ecx, 0Fh
+    .IF ecx != 8
+        mov g_zfErr, 1
+        xor eax, eax
+        ret
+    .ENDIF
+    invoke ZfBits, 8                        ; FLG: no preset dictionary
+    .IF eax & 20h
+        mov g_zfErr, 1
+        xor eax, eax
+        ret
+    .ENDIF
+    invoke ZfInflate
+    ret
+ZfZlibInflate ENDP
+
+; ---------------------------------------------------------------------------
+; GCZ (Dolphin): 32-byte header, 64-bit block pointers (bit 63 = stored raw),
+; Adler hashes (skipped), one zlib stream per block
+; ---------------------------------------------------------------------------
+GCZ_IDXMAX      equ 64 * 1024 * 1024
+
+GczExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
+    LOCAL hIn:DWORD
+    LOCAL hOut:DWORD
+    LOCAL hdr[32]:BYTE
+    LOCAL blkSize:DWORD
+    LOCAL nBlk:DWORD
+    LOCAL compLo:DWORD
+    LOCAL compHi:DWORD
+    LOCAL totLo:DWORD
+    LOCAL totHi:DWORD
+    LOCAL pIdx:DWORD
+    LOCAL idxCb:DWORD
+    LOCAL dataStart:DWORD
+    LOCAL i:DWORD
+    LOCAL remLo:DWORD
+    LOCAL remHi:DWORD
+    LOCAL thisCb:DWORD
+    LOCAL pLo:DWORD
+    LOCAL pHi:DWORD
+    LOCAL offLo:DWORD
+    LOCAL offHi:DWORD
+    LOCAL ok:DWORD
+
+    mov ok, FALSE
+    mov hOut, INVALID_HANDLE_VALUE
+    mov pIdx, 0
+    invoke CreateFileW, pszSrc, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    .IF eax == INVALID_HANDLE_VALUE
+        xor eax, eax
+        ret
+    .ENDIF
+    mov hIn, eax
+    invoke FileReadAt, hIn, 0, 0, addr hdr, 32
+    .IF eax != 32 || dword ptr hdr[0] != 0B10BC001h
+        jmp done
+    .ENDIF
+    mov eax, dword ptr hdr[8]
+    mov compLo, eax
+    mov eax, dword ptr hdr[12]
+    mov compHi, eax
+    mov eax, dword ptr hdr[16]
+    mov totLo, eax
+    mov remLo, eax
+    mov eax, dword ptr hdr[20]
+    mov totHi, eax
+    mov remHi, eax
+    mov eax, dword ptr hdr[24]
+    mov blkSize, eax
+    .IF eax < 512 || eax > 4 * 1024 * 1024
+        jmp done
+    .ENDIF
+    mov eax, dword ptr hdr[28]
+    mov nBlk, eax
+    .IF eax == 0
+        jmp done
+    .ENDIF
+    ; pointers (8 bytes each) then hashes (4 each, skipped); data follows both
+    mov ecx, eax
+    shl ecx, 3
+    mov idxCb, ecx
+    .IF ecx > GCZ_IDXMAX
+        jmp done
+    .ENDIF
+    lea edx, [eax + eax * 2]
+    shl edx, 2                              ; blocks * 12
+    add edx, 32
+    mov dataStart, edx
+    invoke VfsAlloc, idxCb
+    mov pIdx, eax
+    .IF eax == 0
+        jmp done
+    .ENDIF
+    invoke FileReadAt, hIn, 32, 0, pIdx, idxCb
+    .IF eax != idxCb
+        jmp done
+    .ENDIF
+    invoke CreateFileW, pszDst, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL
+    .IF eax == INVALID_HANDLE_VALUE
+        jmp done
+    .ENDIF
+    mov hOut, eax
+    invoke ZfExpandInit, hIn, hOut
+    .IF eax == 0
+        jmp done
+    .ENDIF
+    mov i, 0
+    .WHILE g_zfErr == 0
+        mov eax, i
+        .BREAK .IF eax >= nBlk
+        mov esi, pIdx
+        mov ecx, eax
+        shl ecx, 3
+        add esi, ecx
+        mov eax, dword ptr [esi]
+        mov pLo, eax
+        mov eax, dword ptr [esi + 4]
+        mov pHi, eax
+        and eax, 7FFFFFFFh
+        mov ecx, pLo
+        add ecx, dataStart
+        adc eax, 0
+        mov offLo, ecx
+        mov offHi, eax
+        mov eax, blkSize
+        .IF remHi == 0 && eax > remLo
+            mov eax, remLo
+        .ENDIF
+        mov thisCb, eax
+        invoke ZfSetInput, offLo, offHi
+        mov eax, pHi
+        .IF eax & 80000000h                 ; stored block
+            invoke ZfRawCopy, thisCb
+        .ELSE
+            invoke ZfZlibInflate
+        .ENDIF
+        mov eax, thisCb
+        sub remLo, eax
+        sbb remHi, 0
+        inc i
+    .ENDW
+    invoke ZfOutFinal
+    .IF g_zfErr == 0
+        mov eax, g_zfTotHi
+        .IF eax > totHi
+            mov ok, TRUE
+        .ELSEIF eax == totHi
+            mov eax, g_zfTotLo
+            .IF eax >= totLo
+                mov ok, TRUE
+            .ENDIF
+        .ENDIF
+    .ENDIF
+    invoke ZfExpandFree
+done:
+    invoke VfsFreeMem, pIdx
+    invoke CloseHandle, hIn
+    .IF hOut != INVALID_HANDLE_VALUE
+        invoke CloseHandle, hOut
+        .IF ok == 0
+            invoke DeleteFileW, pszDst
+        .ENDIF
+    .ENDIF
+    mov eax, ok
+    ret
+GczExpandFile ENDP
+
+; ---------------------------------------------------------------------------
+; DAX (PSP): 32-byte header, dword frame offsets, word frame sizes, then the
+; non-compressed area table; 8 KB frames as zlib streams or raw in NC areas
+; ---------------------------------------------------------------------------
+DAX_FRAME       equ 2000h
+DAX_IDXMAX      equ 32 * 1024 * 1024
+
+DaxExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
+    LOCAL hIn:DWORD
+    LOCAL hOut:DWORD
+    LOCAL hdr[32]:BYTE
+    LOCAL totCb:DWORD
+    LOCAL nNc:DWORD
+    LOCAL nFrames:DWORD
+    LOCAL pOffs:DWORD
+    LOCAL pNc:DWORD
+    LOCAL cbOffs:DWORD
+    LOCAL cbNc:DWORD
+    LOCAL i:DWORD
+    LOCAL remCb:DWORD
+    LOCAL thisCb:DWORD
+    LOCAL isRaw:DWORD
+    LOCAL ok:DWORD
+
+    mov ok, FALSE
+    mov hOut, INVALID_HANDLE_VALUE
+    mov pOffs, 0
+    mov pNc, 0
+    invoke CreateFileW, pszSrc, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    .IF eax == INVALID_HANDLE_VALUE
+        xor eax, eax
+        ret
+    .ENDIF
+    mov hIn, eax
+    invoke FileReadAt, hIn, 0, 0, addr hdr, 32
+    .IF eax != 32 || dword ptr hdr[0] != 00584144h      ; "DAX\0"
+        jmp done
+    .ENDIF
+    mov eax, dword ptr hdr[4]
+    mov totCb, eax
+    mov remCb, eax
+    .IF eax == 0
+        jmp done
+    .ENDIF
+    mov eax, dword ptr hdr[12]
+    mov nNc, eax
+    .IF eax > 10000h
+        jmp done
+    .ENDIF
+    mov eax, totCb
+    add eax, DAX_FRAME - 1
+    shr eax, 13
+    mov nFrames, eax
+    ; frame offsets (4 each) and sizes (2 each) in one read
+    lea ecx, [eax + eax * 2]
+    shl ecx, 1                              ; frames * 6
+    mov cbOffs, ecx
+    .IF ecx > DAX_IDXMAX
+        jmp done
+    .ENDIF
+    invoke VfsAlloc, cbOffs
+    mov pOffs, eax
+    .IF eax == 0
+        jmp done
+    .ENDIF
+    invoke FileReadAt, hIn, 32, 0, pOffs, cbOffs
+    .IF eax != cbOffs
+        jmp done
+    .ENDIF
+    .IF nNc != 0
+        mov eax, nNc
+        shl eax, 3
+        mov cbNc, eax
+        invoke VfsAlloc, eax
+        mov pNc, eax
+        .IF eax == 0
+            jmp done
+        .ENDIF
+        mov eax, cbOffs
+        add eax, 32
+        invoke FileReadAt, hIn, eax, 0, pNc, cbNc
+        .IF eax != cbNc
+            jmp done
+        .ENDIF
+    .ENDIF
+    invoke CreateFileW, pszDst, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL
+    .IF eax == INVALID_HANDLE_VALUE
+        jmp done
+    .ENDIF
+    mov hOut, eax
+    invoke ZfExpandInit, hIn, hOut
+    .IF eax == 0
+        jmp done
+    .ENDIF
+    mov i, 0
+    .WHILE g_zfErr == 0
+        mov eax, i
+        .BREAK .IF eax >= nFrames
+        ; inside a non-compressed area?
+        mov isRaw, 0
+        mov esi, pNc
+        mov ebx, nNc
+        .WHILE ebx != 0 && esi != 0
+            mov eax, dword ptr [esi]        ; first frame
+            mov ecx, i
+            .IF ecx >= eax
+                add eax, dword ptr [esi + 4]
+                .IF ecx < eax
+                    mov isRaw, 1
+                    .BREAK
+                .ENDIF
+            .ENDIF
+            add esi, 8
+            dec ebx
+        .ENDW
+        mov eax, DAX_FRAME
+        .IF eax > remCb
+            mov eax, remCb
+        .ENDIF
+        mov thisCb, eax
+        mov esi, pOffs
+        mov eax, i
+        mov ecx, dword ptr [esi + eax * 4]  ; absolute file offset of the frame
+        invoke ZfSetInput, ecx, 0
+        .IF isRaw != 0
+            invoke ZfRawCopy, thisCb
+        .ELSE
+            invoke ZfZlibInflate
+        .ENDIF
+        mov eax, thisCb
+        sub remCb, eax
+        inc i
+    .ENDW
+    invoke ZfOutFinal
+    .IF g_zfErr == 0 && g_zfTotHi == 0
+        mov eax, g_zfTotLo
+        .IF eax >= totCb
+            mov ok, TRUE
+        .ENDIF
+    .ENDIF
+    invoke ZfExpandFree
+done:
+    invoke VfsFreeMem, pOffs
+    invoke VfsFreeMem, pNc
+    invoke CloseHandle, hIn
+    .IF hOut != INVALID_HANDLE_VALUE
+        invoke CloseHandle, hOut
+        .IF ok == 0
+            invoke DeleteFileW, pszDst
+        .ENDIF
+    .ENDIF
+    mov eax, ok
+    ret
+DaxExpandFile ENDP
+
 END

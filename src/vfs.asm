@@ -322,6 +322,10 @@ VfsBuildFromIso PROC USES esi
         invoke OperaBuild, esi
         mov g_bModified, FALSE
         ret
+    .ELSEIF g_bGcm != 0
+        invoke GcBuild, esi
+        mov g_bModified, FALSE
+        ret
     .ENDIF
     ; UDF tree wins when present (Windows media keeps only a stub in the ISO 9660 half)
     invoke UdfOpen
@@ -569,7 +573,7 @@ VfsCopyData PROC USES esi ebx pNode:DWORD, hOut:DWORD
             mov eax, TRUE
             ret
         .ENDIF
-        invoke IsoCopyExtent, [esi].NODE.isoExtent, [esi].NODE.dataSize, hOut
+        invoke IsoCopyBytes, [esi].NODE.isoExtent, [esi].NODE.isoByteRem, [esi].NODE.dataSize, hOut
         ret
     .ELSEIF eax & NF_HOST
         invoke CreateFileW, [esi].NODE.pszHost, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
@@ -642,7 +646,7 @@ VfsReadAll PROC USES esi edi pNode:DWORD, cbMax:DWORD, pcbOut:DWORD
                 mov cb, eax
             .ENDIF
         .ENDIF
-        invoke IsoReadExtent, [esi].NODE.isoExtent, cb, pBuf
+        invoke IsoReadBytes, [esi].NODE.isoExtent, [esi].NODE.isoByteRem, cb, pBuf
         .IF eax == 0
             jmp fail
         .ENDIF

@@ -45,14 +45,14 @@ The program is one small executable with no runtime dependencies.
 | zip | .zip | Yes | No | Largest stored or deflated entry, CRC verified |
 | CSO / CISO | .cso .ciso | Yes | No | v0/v1 deflate blocks (PSP, Dreamcast tooling) |
 | ZSO | .zso | Planned | No | CISO layout with LZ4 blocks |
-| DAX | .dax | Planned | No | PSP, deflate frames |
+| DAX | .dax | Yes | No | PSP: zlib frames and raw NC areas |
 | JSO | .jso | Planned | No | PSP, deflate blocks |
 | PBP | .pbp | Planned | No | PSP EBOOT with the ISO inside DATA.PSAR |
 | CHD | .chd | Planned | No | MAME: zlib / LZMA / FLAC hunks |
-| GCZ | .gcz | Planned | No | Dolphin, deflate blocks |
+| GCZ | .gcz | Yes | No | Dolphin: zlib blocks, stored blocks |
 | WIA / RVZ | .wia .rvz | Planned | No | Dolphin: zstd / bzip2 / LZMA |
 | WBFS | .wbfs | Planned | No | Wii backup file system |
-| GCM | .gcm | Planned | No | GameCube plain image |
+| GCM | .gcm .iso | Yes | No | Big-endian FST reader; files need no block alignment |
 | NKit | .nkit.iso | Planned | No | Wii / GameCube |
 | ISZ | .isz | Planned | No | UltraISO: zlib / bzip2 chunks |
 | DAA | .daa | Planned | No | PowerISO: deflate / LZMA chunks |
@@ -75,7 +75,7 @@ and then open like any other image, the same way ECM does.
 
 | Codec | Status | Used by |
 | --- | --- | --- |
-| DEFLATE (inflate) | Yes | .gz, .zip, .cso; later ISZ, DAA, GCZ, JSO, DAX, PBP, CHD |
+| DEFLATE (inflate) | Yes | .gz, .zip, .cso, .gcz, .dax (raw and zlib framing); later ISZ, DAA, JSO, PBP, CHD |
 | DEFLATE (compress) | Yes | Save As gzip ISO (fixed Huffman, 32 KB window) |
 | LZMA | Planned | DAA, ISZ, CHD, RVZ |
 | bzip2 | Planned | ISZ, RVZ |

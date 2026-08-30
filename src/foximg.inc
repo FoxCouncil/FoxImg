@@ -780,6 +780,7 @@ NODE STRUCT
     dataSizeHi      DWORD ?         ; high 32 bits
     pExtList        DWORD ?         ; EXTENT array when the data is not one contiguous run, else 0
     nExtList        DWORD ?
+    isoByteRem      DWORD ?         ; byte offset inside the first block (GameCube packs files unaligned)
     wUdfFe          DWORD ?         ; writer: partition-relative block of this node's File Entry
     wUdfDir         DWORD ?         ; writer: partition-relative block of directory FID data (dirs)
     wUdfDirLen      DWORD ?         ; writer: bytes of FID data (dirs)
@@ -1119,6 +1120,8 @@ RtlComputeCrc32     PROTO :DWORD,:DWORD,:DWORD  ; seed, pData, cb -> running CRC
 GzExpandFile        PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL (CRC verified)
 ZipExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, largest stored/deflated entry
 CsoExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, CISO v0/v1
+GczExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, Dolphin GCZ
+DaxExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, PSP DAX
 GzCompressFile      PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL; worker progress + Cancel
 EXTERNDEF g_saveGzip:DWORD                      ; save target ends in .gz: worker gzips the image
 
@@ -1145,8 +1148,12 @@ XdvdfsClose         PROTO
 OperaDetect         PROTO
 OperaBuild          PROTO :DWORD
 OperaClose          PROTO
+GcDetect            PROTO                       ; -> TRUE when a GameCube disc header was found
+GcBuild             PROTO :DWORD                ; pRootNode
+GcClose             PROTO
 EXTERNDEF g_bXdvdfs:DWORD
 EXTERNDEF g_bOpera:DWORD
+EXTERNDEF g_bGcm:DWORD
 EXTERNDEF g_bCdi:DWORD
 
 ; main.asm commands callable from ui
@@ -1173,6 +1180,8 @@ FMT_RAW2336     equ 3                           ; MODE2/2336 (data at +8)
 IsoSectorPtr    PROTO :DWORD                    ; lba -> pointer to 2048 user bytes or 0
 IsoCopyExtent   PROTO :DWORD,:DWORD,:DWORD      ; lba, cb, hOut -> BOOL
 IsoReadExtent   PROTO :DWORD,:DWORD,:DWORD      ; lba, cb, pDst -> BOOL
+IsoCopyBytes    PROTO :DWORD,:DWORD,:DWORD,:DWORD   ; lba, byteRem, cb, hOut -> BOOL
+IsoReadBytes    PROTO :DWORD,:DWORD,:DWORD,:DWORD   ; lba, byteRem, cb, pDst -> BOOL
 IsoFormatName   PROTO :DWORD                    ; pszBuf (>= 48 WCHARs)
 lstrlenA        PROTO :DWORD
 lstrcmpA        PROTO :DWORD,:DWORD
