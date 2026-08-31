@@ -1465,46 +1465,10 @@ DfPutMatch PROC USES ebx mlen:DWORD, mdist:DWORD
     ret
 DfPutMatch ENDP
 
-; hash of the 3 bytes at pos, in eax; only valid when pos + 2 < chunk length
-DfHashAt PROC pos:DWORD
-    mov ecx, g_dfChunkPtr
-    add ecx, pos
-    movzx eax, byte ptr [ecx]
-    shl eax, 10
-    movzx edx, byte ptr [ecx + 1]
-    shl edx, 5
-    xor eax, edx
-    movzx edx, byte ptr [ecx + 2]
-    xor eax, edx
-    and eax, DF_HASHSZ - 1
-    ret
-DfHashAt ENDP
-
-DfInsert PROC pos:DWORD
-    mov eax, pos
-    add eax, 2
-    .IF eax >= g_dfChunkLen
-        ret
-    .ENDIF
-    invoke DfHashAt, pos
-    mov ecx, g_dfHead
-    mov edx, dword ptr [ecx + eax * 4]
-    push edx
-    mov edx, pos
-    inc edx
-    mov dword ptr [ecx + eax * 4], edx
-    pop edx
-    mov ecx, g_dfPrev
-    mov eax, pos
-    mov dword ptr [ecx + eax * 4], edx
-    ret
-DfInsert ENDP
-
-; longest match at pos; length in eax (0 when none), distance in g_dfMDist
-DfLongestMatch PROC USES esi edi ebx pos:DWORD
+; Longest match against a known chain head; length in eax, distance in g_dfMDist
+DfMatchAt PROC USES esi edi ebx pos:DWORD, cand:DWORD
     LOCAL best:DWORD
     LOCAL maxLen:DWORD
-    LOCAL cand:DWORD
     LOCAL depth:DWORD
     mov best, 0
     mov g_dfMDist, 0
@@ -1514,22 +1478,13 @@ DfLongestMatch PROC USES esi edi ebx pos:DWORD
         mov eax, DF_MAXMATCH
     .ENDIF
     mov maxLen, eax
-    .IF eax < 3
-        xor eax, eax
-        ret
-    .ENDIF
-    invoke DfHashAt, pos
-    mov ecx, g_dfHead
-    mov eax, dword ptr [ecx + eax * 4]
-    mov cand, eax
     mov depth, DF_DEPTH
     .WHILE cand != 0 && depth != 0
         mov ebx, cand
-        dec ebx                             ; candidate position
+        dec ebx
         mov eax, pos
         sub eax, ebx
         .BREAK .IF eax > DF_MAXDIST
-        ; compare
         mov esi, g_dfChunkPtr
         add esi, ebx
         mov edi, g_dfChunkPtr
@@ -1556,48 +1511,122 @@ DfLongestMatch PROC USES esi edi ebx pos:DWORD
     .ENDW
     mov eax, best
     ret
-DfLongestMatch ENDP
+DfMatchAt ENDP
 
-; one chunk as one fixed-Huffman block
+; One chunk as one fixed-Huffman block. The per-byte work - hash, chain insert,
+; first-byte gate and literal emit - runs inline; procedure calls remain only
+; for accepted matches and buffer flushes, which are rare on either extreme.
 DfCompressChunk PROC USES esi edi ebx last:DWORD
-    LOCAL pos:DWORD
     LOCAL mlen:DWORD
+    LOCAL hashv:DWORD
+    LOCAL candv:DWORD
     mov edi, g_dfHead
     xor eax, eax
     mov ecx, DF_HASHSZ
     rep stosd
-    ; 3-bit block header: BFINAL then BTYPE = 01
     mov eax, last
     and eax, 1
     or eax, 2
     invoke DfEmit, eax, 3
-    mov pos, 0
+    mov esi, g_dfChunkPtr
+    xor ebx, ebx                            ; position
     .WHILE g_dfErr == 0
-        mov eax, pos
-        .BREAK .IF eax >= g_dfChunkLen
-        invoke DfLongestMatch, pos
-        mov mlen, eax
-        mov ecx, g_dfMDist
-        .IF eax > 3 || (eax == 3 && ecx <= 4096)
-            invoke DfPutMatch, mlen, g_dfMDist
-            mov eax, pos
-            add eax, mlen
-            mov ebx, pos
-            .WHILE ebx < eax
-                push eax
-                invoke DfInsert, ebx
-                pop eax
-                inc ebx
-            .ENDW
-            mov pos, eax
-        .ELSE
-            mov ecx, g_dfChunkPtr
-            mov eax, pos
-            movzx eax, byte ptr [ecx + eax]
-            invoke DfPutLit, eax
-            invoke DfInsert, pos
-            inc pos
+        mov eax, g_dfChunkLen
+        .BREAK .IF ebx >= eax
+        sub eax, 2
+        .IF ebx < eax
+            ; hash the three bytes here and fetch the chain head
+            movzx eax, byte ptr [esi + ebx]
+            shl eax, 10
+            movzx ecx, byte ptr [esi + ebx + 1]
+            shl ecx, 5
+            xor eax, ecx
+            movzx ecx, byte ptr [esi + ebx + 2]
+            xor eax, ecx
+            and eax, DF_HASHSZ - 1
+            mov hashv, eax
+            mov edi, g_dfHead
+            mov edx, dword ptr [edi + eax * 4]
+            mov candv, edx
+            .IF edx != 0
+                ; worth a real search only when the first bytes agree in range
+                lea ecx, [edx - 1]
+                mov eax, ebx
+                sub eax, ecx
+                .IF eax <= DF_MAXDIST
+                    mov al, byte ptr [esi + ecx]
+                    .IF al == byte ptr [esi + ebx]
+                        invoke DfMatchAt, ebx, candv
+                        mov ecx, g_dfMDist
+                        .IF eax > 3 || (eax == 3 && ecx <= 4096)
+                            mov mlen, eax
+                            invoke DfPutMatch, mlen, g_dfMDist
+                            ; insert every covered position, inline
+                            mov edx, ebx
+                            add edx, mlen
+                            mov ecx, g_dfChunkLen
+                            sub ecx, 2
+                            .WHILE ebx < edx
+                                .BREAK .IF ebx >= ecx
+                                movzx eax, byte ptr [esi + ebx]
+                                shl eax, 10
+                                push ecx
+                                movzx ecx, byte ptr [esi + ebx + 1]
+                                shl ecx, 5
+                                xor eax, ecx
+                                movzx ecx, byte ptr [esi + ebx + 2]
+                                xor eax, ecx
+                                and eax, DF_HASHSZ - 1
+                                mov edi, g_dfHead
+                                mov ecx, dword ptr [edi + eax * 4]
+                                lea edi, [ebx + 1]
+                                push edx
+                                mov edx, g_dfHead
+                                mov dword ptr [edx + eax * 4], edi
+                                mov edx, g_dfPrev
+                                mov dword ptr [edx + ebx * 4], ecx
+                                pop edx
+                                pop ecx
+                                inc ebx
+                            .ENDW
+                            mov ebx, edx
+                            .CONTINUE
+                        .ENDIF
+                    .ENDIF
+                .ENDIF
+            .ENDIF
+            ; no match: link this position into its chain
+            mov eax, hashv
+            mov edi, g_dfHead
+            mov ecx, candv
+            lea edx, [ebx + 1]
+            mov dword ptr [edi + eax * 4], edx
+            mov edx, g_dfPrev
+            mov dword ptr [edx + ebx * 4], ecx
         .ENDIF
+        ; literal, emitted inline: code into the accumulator, bytes drained as they fill
+        movzx eax, byte ptr [esi + ebx]
+        mov ecx, g_dfBitCnt
+        movzx edx, word ptr g_dfLitCode[eax * 2]
+        shl edx, cl
+        or g_dfBitBuf, edx
+        movzx edx, byte ptr g_dfLitBits[eax]
+        add ecx, edx
+        mov g_dfBitCnt, ecx
+        .WHILE g_dfBitCnt >= 8
+            mov eax, g_dfOutPos
+            .IF eax >= DF_OUTBUF - 8
+                invoke DfFlushOut
+                mov eax, g_dfOutPos
+            .ENDIF
+            mov ecx, g_dfOut
+            mov edx, g_dfBitBuf
+            mov byte ptr [ecx + eax], dl
+            inc g_dfOutPos
+            shr g_dfBitBuf, 8
+            sub g_dfBitCnt, 8
+        .ENDW
+        inc ebx
     .ENDW
     invoke DfPutLit, 256                    ; end of block
     ret
