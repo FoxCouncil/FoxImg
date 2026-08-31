@@ -49,7 +49,7 @@ The program is one small executable with no runtime dependencies.
 | DAX | .dax | Yes | No | PSP: zlib frames and raw NC areas |
 | JSO | .jso | Yes | No | PSP: deflate and LZO methods |
 | PBP | .pbp | Planned | No | PSP EBOOT with the ISO inside DATA.PSAR |
-| CHD | .chd | Yes | No | v5: zlib, LZMA, cdzl, cdlz, stored and self hunks; FLAC audio and parents declined |
+| CHD | .chd | Yes | No | v5: zlib, LZMA, FLAC, all CD codecs, stored and self hunks; parented CHDs declined |
 | GCZ | .gcz | Yes | No | Dolphin: zlib blocks, stored blocks |
 | WIA / RVZ | .wia .rvz | Planned | No | Dolphin: zstd / bzip2 / LZMA |
 | WBFS | .wbfs | Planned | No | Wii backup file system |
@@ -82,7 +82,7 @@ and then open like any other image, the same way ECM does.
 | bzip2 | Planned | ISZ, RVZ |
 | zstd | Planned | RVZ |
 | LZ4 | Yes | ZSO, CISO v2 |
-| FLAC | Planned | CHD audio tracks |
+| FLAC | Yes | CHD cdfl and flac hunks (16-bit stereo) |
 | LZO1X | Yes | JSO method 0 |
 
 ## Download

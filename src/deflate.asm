@@ -57,6 +57,10 @@ g_zfLens        db 320 dup(?)           ; scratch code lengths (max 286 + 30)
 
 ZfSmartInflate  PROTO
 Lz4Block        PROTO :DWORD
+FlacAlloc       PROTO
+FlacFree        PROTO
+FlacStart       PROTO
+FlacDecodeStream PROTO :DWORD,:DWORD
 
 ; ---------------------------------------------------------------------------
 ; Input: sequential bytes through FileReadAt so wrappers can seek by resetting the offset
@@ -3629,6 +3633,7 @@ ChdExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
     LOCAL pMap:DWORD
     LOCAL pScratch:DWORD
     LOCAL haveLzma:DWORD
+    LOCAL haveFlac:DWORD
     LOCAL lastComp:DWORD
     LOCAL repCount:DWORD
     LOCAL curLo:DWORD
@@ -3647,6 +3652,7 @@ ChdExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
     mov pMap, 0
     mov pScratch, 0
     mov haveLzma, 0
+    mov haveFlac, 0
     mov isCd, 0
     invoke CreateFileW, pszSrc, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
     .IF eax == INVALID_HANDLE_VALUE
@@ -3679,6 +3685,11 @@ ChdExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
             mov isCd, 1
         .ELSEIF eax == 6C7A6463h            ; "cdzl"
             mov isCd, 1
+        .ELSEIF eax == 6C666463h            ; "cdfl"
+            mov isCd, 1
+            mov haveFlac, 1
+        .ELSEIF eax == 63616C66h            ; "flac"
+            mov haveFlac, 1
         .ELSEIF eax != 0 && eax != 62696C7Ah    ; "zlib"
             jmp done
         .ENDIF
@@ -3964,6 +3975,12 @@ ChdExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
             jmp done
         .ENDIF
     .ENDIF
+    .IF haveFlac != 0
+        invoke FlacAlloc
+        .IF eax == 0
+            jmp done
+        .ENDIF
+    .ENDIF
     invoke VfsAlloc, hunkBytes
     mov pScratch, eax
     .IF eax == 0
@@ -3993,6 +4010,27 @@ ChdExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
                     inc eax
                 .ENDIF
                 invoke ChdCdHunk, dword ptr [esi + 8], dword ptr [esi + 12], thisCb, eax
+            .ELSEIF fourcc == 6C666463h ; cdfl: bare FLAC frames, byte-swapped samples
+                invoke ZfSetInput, dword ptr [esi + 8], dword ptr [esi + 12]
+                invoke FlacStart
+                mov eax, thisCb
+                shr eax, 2
+                invoke FlacDecodeStream, eax, 1
+            .ELSEIF fourcc == 63616C66h ; flac: leading endianness byte
+                invoke ZfSetInput, dword ptr [esi + 8], dword ptr [esi + 12]
+                invoke FlacStart
+                invoke ZfInByte
+                .IF eax == 4Ch          ; 'L': stored little-endian, ours already
+                    xor ecx, ecx
+                .ELSEIF eax == 42h      ; 'B'
+                    mov ecx, 1
+                .ELSE
+                    mov g_zfErr, 1
+                    .BREAK
+                .ENDIF
+                mov eax, thisCb
+                shr eax, 2
+                invoke FlacDecodeStream, eax, ecx
             .ELSE
                 invoke ZfSetInput, dword ptr [esi + 8], dword ptr [esi + 12]
                 .IF fourcc == 62696C7Ah ; zlib: raw deflate
@@ -4079,11 +4117,633 @@ done:
     .IF haveLzma != 0
         invoke LzmaFree
     .ENDIF
+    .IF haveFlac != 0
+        invoke FlacFree
+    .ENDIF
     invoke VfsFreeMem, pBits
     invoke VfsFreeMem, pMap
     invoke VfsFreeMem, pScratch
     invoke ZfClosePair, ok, hIn, hOut, pszDst
     ret
 ChdExpandFile ENDP
+
+
+; ---------------------------------------------------------------------------
+; FLAC decoder (CHD 'cdfl' and 'flac' hunks): bare frame sequences, always
+; 2 channels of 16-bit samples here. Subframes cover constant, verbatim,
+; fixed orders 0-4 and LPC with Rice-coded residuals; stereo decorrelation
+; undoes left/side, right/side and mid/side. CRCs pass through unchecked.
+; ---------------------------------------------------------------------------
+FL_MAXBLK       equ 8192
+
+.data
+g_flBitBuf      dd 0                    ; MSB-first accumulator
+g_flBitCnt      dd 0
+g_flSampL       dd 0                    ; per-channel sample buffers (dwords)
+g_flSampR       dd 0
+g_flBlk         dd 0                    ; block size of the current frame
+g_flChan        dd 0                    ; channel assignment code
+
+.code
+
+FlacAlloc PROC
+    invoke VfsAlloc, FL_MAXBLK * 4
+    mov g_flSampL, eax
+    invoke VfsAlloc, FL_MAXBLK * 4
+    mov g_flSampR, eax
+    mov eax, g_flSampL
+    .IF eax == 0 || g_flSampR == 0
+        xor eax, eax
+        ret
+    .ENDIF
+    mov eax, TRUE
+    ret
+FlacAlloc ENDP
+
+FlacFree PROC
+    invoke VfsFreeMem, g_flSampL
+    invoke VfsFreeMem, g_flSampR
+    mov g_flSampL, 0
+    mov g_flSampR, 0
+    ret
+FlacFree ENDP
+
+FlacStart PROC
+    mov g_flBitBuf, 0
+    mov g_flBitCnt, 0
+    ret
+FlacStart ENDP
+
+; n bits (0-24), MSB first
+FlBits PROC USES ebx n:DWORD
+    .WHILE TRUE
+        mov eax, g_flBitCnt
+        .BREAK .IF eax >= n
+        invoke ZfInByte
+        mov ecx, g_flBitBuf
+        shl ecx, 8
+        or ecx, eax
+        mov g_flBitBuf, ecx
+        add g_flBitCnt, 8
+    .ENDW
+    mov ecx, g_flBitCnt
+    sub ecx, n
+    mov g_flBitCnt, ecx
+    mov eax, g_flBitBuf
+    shr eax, cl
+    mov ecx, n
+    .IF ecx == 0
+        xor eax, eax
+        ret
+    .ENDIF
+    mov edx, 1
+    shl edx, cl
+    dec edx
+    and eax, edx
+    ret
+FlBits ENDP
+
+; n bits (0-32), MSB first
+FlBitsL PROC USES ebx n:DWORD
+    .IF n <= 24
+        invoke FlBits, n
+        ret
+    .ENDIF
+    mov eax, n
+    sub eax, 16
+    push eax
+    invoke FlBits, 16
+    mov ebx, eax
+    pop eax
+    push ebx
+    invoke FlBits, eax
+    pop ebx
+    mov ecx, n
+    sub ecx, 16
+    shl ebx, cl
+    or eax, ebx
+    ret
+FlBitsL ENDP
+
+; n bits sign-extended
+FlSigned PROC n:DWORD
+    invoke FlBitsL, n
+    mov ecx, 32
+    sub ecx, n
+    shl eax, cl
+    sar eax, cl
+    ret
+FlSigned ENDP
+
+; zero run then a one bit
+FlUnary PROC USES ebx
+    xor ebx, ebx
+    .WHILE g_zfErr == 0
+        invoke FlBits, 1
+        .BREAK .IF eax != 0
+        inc ebx
+        .IF ebx > 1000000h                  ; runaway stream
+            mov g_zfErr, 1
+            .BREAK
+        .ENDIF
+    .ENDW
+    mov eax, ebx
+    ret
+FlUnary ENDP
+
+; Rice-coded residuals into pBuf + order*4, blocksize total slots
+FlResiduals PROC USES esi edi ebx pBuf:DWORD, order:DWORD
+    LOCAL method:DWORD
+    LOCAL nparts:DWORD
+    LOCAL part:DWORD
+    LOCAL cnt:DWORD
+    LOCAL param:DWORD
+    LOCAL escv:DWORD
+    LOCAL pbits:DWORD
+    invoke FlBits, 2
+    .IF eax >= 2
+        mov g_zfErr, 1
+        ret
+    .ENDIF
+    mov ecx, 4
+    mov edx, 15
+    .IF eax == 1
+        mov ecx, 5
+        mov edx, 31
+    .ENDIF
+    mov pbits, ecx
+    mov escv, edx
+    invoke FlBits, 4
+    mov ecx, eax
+    mov eax, 1
+    shl eax, cl
+    mov nparts, eax
+    mov eax, g_flBlk
+    shr eax, cl
+    mov cnt, eax                            ; samples per partition
+    .IF eax == 0 || eax > g_flBlk
+        mov g_zfErr, 1
+        ret
+    .ENDIF
+    mov edi, pBuf
+    mov eax, order
+    lea edi, [edi + eax * 4]
+    mov part, 0
+    .WHILE g_zfErr == 0
+        mov eax, part
+        .BREAK .IF eax >= nparts
+        mov ebx, cnt
+        .IF part == 0
+            sub ebx, order                  ; the warmup samples came earlier
+            .IF ebx & 80000000h
+                mov g_zfErr, 1
+                .BREAK
+            .ENDIF
+        .ENDIF
+        invoke FlBits, pbits
+        mov param, eax
+        .IF eax == escv
+            ; escape: raw n-bit residuals
+            invoke FlBits, 5
+            mov param, eax
+            .WHILE ebx != 0 && g_zfErr == 0
+                .IF param == 0
+                    xor eax, eax
+                .ELSE
+                    invoke FlSigned, param
+                .ENDIF
+                mov dword ptr [edi], eax
+                add edi, 4
+                dec ebx
+            .ENDW
+        .ELSE
+            .WHILE ebx != 0 && g_zfErr == 0
+                invoke FlUnary
+                mov esi, eax
+                .IF param != 0
+                    mov ecx, param
+                    shl esi, cl
+                    invoke FlBits, param
+                    or esi, eax
+                .ENDIF
+                mov eax, esi
+                shr eax, 1
+                and esi, 1
+                neg esi
+                xor eax, esi
+                mov dword ptr [edi], eax
+                add edi, 4
+                dec ebx
+            .ENDW
+        .ENDIF
+        inc part
+    .ENDW
+    ret
+FlResiduals ENDP
+
+; One subframe into pBuf; bps includes any side-channel extra bit
+FlSubframe PROC USES esi edi ebx pBuf:DWORD, bps:DWORD
+    LOCAL ftype:DWORD
+    LOCAL wasted:DWORD
+    LOCAL order:DWORD
+    LOCAL prec:DWORD
+    LOCAL shiftv:DWORD
+    LOCAL i:DWORD
+    LOCAL ebps:DWORD
+    LOCAL coefs[32]:DWORD
+    invoke FlBits, 1
+    .IF eax != 0
+        mov g_zfErr, 1
+        ret
+    .ENDIF
+    invoke FlBits, 6
+    mov ftype, eax
+    mov wasted, 0
+    invoke FlBits, 1
+    .IF eax != 0
+        invoke FlUnary
+        inc eax
+        mov wasted, eax
+    .ENDIF
+    mov eax, bps
+    sub eax, wasted
+    mov ebps, eax
+    .IF eax == 0 || eax > 32
+        mov g_zfErr, 1
+        ret
+    .ENDIF
+    mov eax, ftype
+    .IF eax == 0
+        ; constant
+        invoke FlSigned, ebps
+        mov edi, pBuf
+        mov ecx, g_flBlk
+        rep stosd
+    .ELSEIF eax == 1
+        ; verbatim
+        mov edi, pBuf
+        mov ebx, g_flBlk
+        .WHILE ebx != 0 && g_zfErr == 0
+            invoke FlSigned, ebps
+            mov dword ptr [edi], eax
+            add edi, 4
+            dec ebx
+        .ENDW
+    .ELSEIF eax >= 8 && eax <= 12
+        ; fixed prediction
+        sub eax, 8
+        mov order, eax
+        mov edi, pBuf
+        mov ebx, eax
+        .WHILE ebx != 0 && g_zfErr == 0
+            invoke FlSigned, ebps
+            mov dword ptr [edi], eax
+            add edi, 4
+            dec ebx
+        .ENDW
+        invoke FlResiduals, pBuf, order
+        .IF g_zfErr != 0
+            ret
+        .ENDIF
+        mov esi, pBuf
+        mov eax, order
+        mov i, eax
+        .WHILE TRUE
+            mov eax, i
+            .BREAK .IF eax >= g_flBlk
+            mov edi, eax
+            shl edi, 2
+            add edi, esi                    ; &s[i]
+            mov eax, dword ptr [edi]        ; residual
+            mov ecx, order
+            .IF ecx == 1
+                add eax, dword ptr [edi - 4]
+            .ELSEIF ecx == 2
+                mov edx, dword ptr [edi - 4]
+                add edx, edx
+                sub edx, dword ptr [edi - 8]
+                add eax, edx
+            .ELSEIF ecx == 3
+                mov edx, dword ptr [edi - 4]
+                sub edx, dword ptr [edi - 8]
+                lea edx, [edx + edx * 2]
+                add edx, dword ptr [edi - 12]
+                add eax, edx
+            .ELSEIF ecx == 4
+                mov edx, dword ptr [edi - 4]
+                add edx, dword ptr [edi - 12]
+                shl edx, 2
+                mov ecx, dword ptr [edi - 8]
+                lea ecx, [ecx * 2 + ecx]
+                shl ecx, 1                  ; 6 * s2
+                sub edx, ecx
+                sub edx, dword ptr [edi - 16]
+                add eax, edx
+            .ENDIF
+            mov dword ptr [edi], eax
+            inc i
+        .ENDW
+    .ELSEIF eax >= 32
+        ; LPC
+        sub eax, 31
+        mov order, eax
+        mov edi, pBuf
+        mov ebx, eax
+        .WHILE ebx != 0 && g_zfErr == 0
+            invoke FlSigned, ebps
+            mov dword ptr [edi], eax
+            add edi, 4
+            dec ebx
+        .ENDW
+        invoke FlBits, 4
+        inc eax
+        .IF eax >= 16
+            mov g_zfErr, 1
+            ret
+        .ENDIF
+        mov prec, eax
+        invoke FlSigned, 5
+        .IF eax & 80000000h
+            mov g_zfErr, 1                  ; negative shifts do not occur
+            ret
+        .ENDIF
+        mov shiftv, eax
+        mov i, 0
+        .WHILE g_zfErr == 0
+            mov eax, i
+            .BREAK .IF eax >= order
+            invoke FlSigned, prec
+            mov ecx, i
+            mov dword ptr coefs[ecx * 4], eax
+            inc i
+        .ENDW
+        invoke FlResiduals, pBuf, order
+        .IF g_zfErr != 0
+            ret
+        .ENDIF
+        mov esi, pBuf
+        mov eax, order
+        mov i, eax
+        .WHILE TRUE
+            mov eax, i
+            .BREAK .IF eax >= g_flBlk
+            ; 64-bit dot product of coefs and history
+            push 0
+            push 0                          ; [esp] = sum lo, [esp+4] = sum hi
+            xor ebx, ebx
+            .WHILE ebx < order
+                mov eax, i
+                sub eax, ebx
+                dec eax
+                mov eax, dword ptr [esi + eax * 4]
+                imul dword ptr coefs[ebx * 4]
+                add dword ptr [esp], eax
+                adc dword ptr [esp + 4], edx
+                inc ebx
+            .ENDW
+            pop edx
+            pop eax
+            xchg eax, edx                   ; undo push order: eax = lo, edx = hi
+            mov ecx, shiftv
+            .IF ecx != 0
+                shrd eax, edx, cl
+                sar edx, cl
+            .ENDIF
+            mov ecx, i
+            mov edx, dword ptr [esi + ecx * 4]
+            add eax, edx
+            mov dword ptr [esi + ecx * 4], eax
+            inc i
+        .ENDW
+    .ELSE
+        mov g_zfErr, 1
+        ret
+    .ENDIF
+    ; wasted bits shift everything back up
+    mov ecx, wasted
+    .IF ecx != 0
+        mov edi, pBuf
+        mov ebx, g_flBlk
+        .WHILE ebx != 0
+            mov eax, dword ptr [edi]
+            shl eax, cl
+            mov dword ptr [edi], eax
+            add edi, 4
+            dec ebx
+        .ENDW
+    .ENDIF
+    ret
+FlSubframe ENDP
+
+; One frame: header, two subframes, stereo undo, samples out as 16-bit pairs
+FlacFrame PROC USES esi edi ebx swapEnd:DWORD
+    LOCAL bsCode:DWORD
+    LOCAL srCode:DWORD
+    LOCAL sL:DWORD
+    LOCAL sR:DWORD
+    LOCAL i:DWORD
+    invoke FlBits, 16
+    mov ecx, eax
+    and ecx, 0FFFCh
+    .IF ecx != 0FFF8h
+        mov g_zfErr, 1
+        ret
+    .ENDIF
+    invoke FlBits, 4
+    mov bsCode, eax
+    invoke FlBits, 4
+    mov srCode, eax
+    invoke FlBits, 4
+    mov g_flChan, eax
+    invoke FlBits, 3
+    .IF eax != 4                            ; only 16-bit here
+        mov g_zfErr, 1
+        ret
+    .ENDIF
+    invoke FlBits, 1
+    ; coded frame number, UTF-8 style
+    invoke FlBits, 8
+    mov ebx, 0
+    .IF eax >= 0F0h
+        mov ebx, 3
+    .ELSEIF eax >= 0E0h
+        mov ebx, 2
+    .ELSEIF eax >= 0C0h
+        mov ebx, 1
+    .ELSEIF eax >= 80h
+        mov g_zfErr, 1
+        ret
+    .ENDIF
+    .WHILE ebx != 0
+        invoke FlBits, 8
+        dec ebx
+    .ENDW
+    ; block size
+    mov eax, bsCode
+    .IF eax == 0
+        mov g_zfErr, 1
+        ret
+    .ELSEIF eax == 1
+        mov g_flBlk, 192
+    .ELSEIF eax <= 5
+        mov ecx, eax
+        sub ecx, 2
+        mov eax, 576
+        shl eax, cl
+        mov g_flBlk, eax
+    .ELSEIF eax == 6
+        invoke FlBits, 8
+        inc eax
+        mov g_flBlk, eax
+    .ELSEIF eax == 7
+        invoke FlBits, 16
+        inc eax
+        mov g_flBlk, eax
+    .ELSE
+        mov ecx, eax
+        sub ecx, 8
+        mov eax, 256
+        shl eax, cl
+        mov g_flBlk, eax
+    .ENDIF
+    .IF g_flBlk > FL_MAXBLK
+        mov g_zfErr, 1
+        ret
+    .ENDIF
+    mov eax, srCode
+    .IF eax == 12
+        invoke FlBits, 8
+    .ELSEIF eax == 13 || eax == 14
+        invoke FlBits, 16
+    .ENDIF
+    invoke FlBits, 8                        ; header CRC
+    ; channel setup: which side carries the extra bit
+    mov eax, g_flChan
+    mov ecx, 16
+    mov edx, 16
+    .IF eax == 1
+    .ELSEIF eax == 8 || eax == 10           ; left/side, mid/side: side is channel 1
+        inc edx
+    .ELSEIF eax == 9                        ; right/side: side is channel 0
+        inc ecx
+    .ELSE
+        mov g_zfErr, 1
+        ret
+    .ENDIF
+    push edx
+    invoke FlSubframe, g_flSampL, ecx
+    pop edx
+    .IF g_zfErr != 0
+        ret
+    .ENDIF
+    invoke FlSubframe, g_flSampR, edx
+    .IF g_zfErr != 0
+        ret
+    .ENDIF
+    ; undo decorrelation
+    mov esi, g_flSampL
+    mov edi, g_flSampR
+    mov eax, g_flChan
+    .IF eax == 8
+        ; right = left - side
+        xor ebx, ebx
+        .WHILE ebx < g_flBlk
+            mov eax, dword ptr [esi + ebx * 4]
+            sub eax, dword ptr [edi + ebx * 4]
+            mov dword ptr [edi + ebx * 4], eax
+            inc ebx
+        .ENDW
+    .ELSEIF eax == 9
+        ; channel 0 held side, channel 1 right: left = right + side
+        xor ebx, ebx
+        .WHILE ebx < g_flBlk
+            mov eax, dword ptr [edi + ebx * 4]
+            add dword ptr [esi + ebx * 4], eax
+            inc ebx
+        .ENDW
+    .ELSEIF eax == 10
+        ; mid/side
+        xor ebx, ebx
+        .WHILE ebx < g_flBlk
+            mov eax, dword ptr [esi + ebx * 4] ; mid
+            mov ecx, dword ptr [edi + ebx * 4] ; side
+            shl eax, 1
+            mov edx, ecx
+            and edx, 1
+            or eax, edx
+            mov edx, eax
+            add edx, ecx
+            sar edx, 1
+            sub eax, ecx
+            sar eax, 1
+            mov dword ptr [esi + ebx * 4], edx ; left
+            mov dword ptr [edi + ebx * 4], eax ; right
+            inc ebx
+        .ENDW
+    .ENDIF
+    ; byte-align, then the frame CRC-16
+    mov eax, g_flBitCnt
+    and eax, 7
+    invoke FlBits, eax
+    invoke FlBits, 16
+    ; emit interleaved 16-bit pairs
+    mov i, 0
+    .WHILE g_zfErr == 0
+        mov eax, i
+        .BREAK .IF eax >= g_flBlk
+        mov esi, g_flSampL
+        mov ecx, dword ptr [esi + eax * 4]
+        mov sL, ecx
+        mov esi, g_flSampR
+        mov ecx, dword ptr [esi + eax * 4]
+        mov sR, ecx
+        .IF swapEnd != 0
+            mov eax, sL
+            shr eax, 8
+            and eax, 0FFh
+            invoke ZfPutB, eax
+            mov eax, sL
+            and eax, 0FFh
+            invoke ZfPutB, eax
+            mov eax, sR
+            shr eax, 8
+            and eax, 0FFh
+            invoke ZfPutB, eax
+            mov eax, sR
+            and eax, 0FFh
+            invoke ZfPutB, eax
+        .ELSE
+            mov eax, sL
+            and eax, 0FFh
+            invoke ZfPutB, eax
+            mov eax, sL
+            shr eax, 8
+            and eax, 0FFh
+            invoke ZfPutB, eax
+            mov eax, sR
+            and eax, 0FFh
+            invoke ZfPutB, eax
+            mov eax, sR
+            shr eax, 8
+            and eax, 0FFh
+            invoke ZfPutB, eax
+        .ENDIF
+        inc i
+    .ENDW
+    ret
+FlacFrame ENDP
+
+; Decode stereo frames until sampPerChan samples per channel came out
+FlacDecodeStream PROC USES ebx sampPerChan:DWORD, swapEnd:DWORD
+    xor ebx, ebx
+    .WHILE ebx < sampPerChan && g_zfErr == 0
+        invoke FlacFrame, swapEnd
+        add ebx, g_flBlk
+    .ENDW
+    .IF ebx != sampPerChan
+        mov g_zfErr, 1
+    .ENDIF
+    ret
+FlacDecodeStream ENDP
 
 END
