@@ -1124,6 +1124,7 @@ GczExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, Dolphin
 DaxExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, PSP DAX
 JsoExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, PSP JSO (deflate method)
 IszExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, UltraISO ISZ (zlib chunks)
+DaaExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, PowerISO DAA v0x100
 GzCompressFile      PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL; worker progress + Cancel
 EXTERNDEF g_saveGzip:DWORD                      ; save target ends in .gz: worker gzips the image
 

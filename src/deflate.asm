@@ -40,6 +40,7 @@ g_zfCrc         dd 0
 g_zfTotLo       dd 0
 g_zfTotHi       dd 0
 g_zfFixInit     dd 0
+g_zfWrapMode    dd 0                    ; deflate framing per file: 0 undecided, 1 raw, 2 zlib
 
 .data?
 g_zfLC          dw 16 dup(?)            ; dynamic literal/length table: counts per bit length, then symbols
@@ -629,6 +630,7 @@ ZfExpandInit PROC hIn:DWORD, hOut:DWORD
     mov g_zfOutPos, 0
     mov g_zfOutStart, 0
     mov g_zfErr, 0
+    mov g_zfWrapMode, 0
     invoke ZfSetInput, 0, 0
     mov eax, TRUE
     ret
@@ -1611,38 +1613,46 @@ ZfZlibInflate PROC
     ret
 ZfZlibInflate ENDP
 
-; Deflate stream that may or may not carry a zlib wrapper (CISO writers differ):
-; consume two bytes, and when they do not look like a zlib header, feed them back
-; through the bit accumulator so the raw stream decodes intact.
+; Deflate stream that may or may not carry a zlib wrapper (writers differ). The
+; first compressed block of a file decides, and every later block follows suit -
+; a per-block sniff would eventually mistake raw data for a zlib header.
 ZfSmartInflate PROC USES ebx
     LOCAL b1:DWORD
     invoke ZfBits, 8
     mov ebx, eax
     invoke ZfBits, 8
     mov b1, eax
-    mov ecx, ebx
-    shl ecx, 8
-    or ecx, eax                             ; CMF*256 + FLG
-    mov edx, ebx
-    and edx, 0Fh
-    .IF edx == 8 && ebx < 80h
-        push ecx
-        xor edx, edx
-        mov eax, ecx
-        mov ecx, 31
-        div ecx
-        pop ecx
-        .IF edx == 0                        ; valid zlib check bits
-            .IF ecx & 20h                   ; FDICT (bit 5 of FLG) unsupported
-                mov g_zfErr, 1
-                xor eax, eax
+    .IF g_zfWrapMode == 2                   ; known zlib: the two bytes were the header
+        invoke ZfInflate
+        ret
+    .ENDIF
+    .IF g_zfWrapMode == 0
+        mov ecx, ebx
+        shl ecx, 8
+        or ecx, b1                          ; CMF*256 + FLG
+        mov edx, ebx
+        and edx, 0Fh
+        .IF edx == 8 && ebx < 80h
+            push ecx
+            xor edx, edx
+            mov eax, ecx
+            mov ecx, 31
+            div ecx
+            pop ecx
+            .IF edx == 0                    ; valid zlib check bits
+                .IF ecx & 20h               ; FDICT (bit 5 of FLG) unsupported
+                    mov g_zfErr, 1
+                    xor eax, eax
+                    ret
+                .ENDIF
+                mov g_zfWrapMode, 2
+                invoke ZfInflate
                 ret
             .ENDIF
-            invoke ZfInflate
-            ret
         .ENDIF
+        mov g_zfWrapMode, 1
     .ENDIF
-    mov eax, b1                             ; not zlib: replay both bytes, LSB first
+    mov eax, b1                             ; raw: replay both bytes, LSB first
     shl eax, 8
     or eax, ebx
     mov g_zfBitBuf, eax
@@ -2396,5 +2406,141 @@ done:
     mov eax, ok
     ret
 IszExpandFile ENDP
+
+; ---------------------------------------------------------------------------
+; DAA v0x100 (PowerISO): 76-byte header, 3-byte chunk lengths stored as
+; high, low, middle; consecutive deflate chunks of chunksize output each.
+; v0x110, encrypted and multipart images are declined.
+; ---------------------------------------------------------------------------
+DAA_IDXMAX      equ 16 * 1024 * 1024
+
+DaaExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
+    LOCAL hIn:DWORD
+    LOCAL hOut:DWORD
+    LOCAL hdr[76]:BYTE
+    LOCAL chunkSize:DWORD
+    LOCAL nChunks:DWORD
+    LOCAL totLo:DWORD
+    LOCAL totHi:DWORD
+    LOCAL pIdx:DWORD
+    LOCAL idxCb:DWORD
+    LOCAL i:DWORD
+    LOCAL dataLo:DWORD
+    LOCAL dataHi:DWORD
+    LOCAL clen:DWORD
+    LOCAL ok:DWORD
+
+    mov ok, FALSE
+    mov hOut, INVALID_HANDLE_VALUE
+    mov pIdx, 0
+    invoke CreateFileW, pszSrc, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    .IF eax == INVALID_HANDLE_VALUE
+        xor eax, eax
+        ret
+    .ENDIF
+    mov hIn, eax
+    invoke FileReadAt, hIn, 0, 0, addr hdr, 76
+    .IF eax != 76 || dword ptr hdr[0] != 00414144h      ; "DAA\0" (rejects DAA VOL parts)
+        jmp done
+    .ENDIF
+    .IF dword ptr hdr[20] != 100h || dword ptr hdr[28] != 1
+        jmp done                            ; only the classic version
+    .ENDIF
+    mov eax, dword ptr hdr[36]
+    mov chunkSize, eax
+    .IF eax < 512 || eax > 8 * 1024 * 1024
+        jmp done
+    .ENDIF
+    mov eax, dword ptr hdr[40]
+    mov totLo, eax
+    mov eax, dword ptr hdr[44]
+    mov totHi, eax
+    mov eax, totLo
+    or eax, totHi
+    .IF eax == 0
+        jmp done
+    .ENDIF
+    mov eax, dword ptr hdr[24]              ; data offset
+    mov dataLo, eax
+    mov dataHi, 0
+    mov ecx, dword ptr hdr[16]              ; chunk length table offset
+    sub eax, ecx
+    .IF eax == 0 || eax > DAA_IDXMAX
+        jmp done
+    .ENDIF
+    mov idxCb, eax
+    xor edx, edx
+    mov ecx, 3
+    div ecx
+    mov nChunks, eax
+    .IF eax == 0
+        jmp done
+    .ENDIF
+    mov eax, idxCb
+    add eax, 4
+    invoke VfsAlloc, eax
+    mov pIdx, eax
+    .IF eax == 0
+        jmp done
+    .ENDIF
+    invoke FileReadAt, hIn, dword ptr hdr[16], 0, pIdx, idxCb
+    .IF eax != idxCb
+        jmp done
+    .ENDIF
+    invoke CreateFileW, pszDst, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL
+    .IF eax == INVALID_HANDLE_VALUE
+        jmp done
+    .ENDIF
+    mov hOut, eax
+    invoke ZfExpandInit, hIn, hOut
+    .IF eax == 0
+        jmp done
+    .ENDIF
+    mov i, 0
+    .WHILE g_zfErr == 0
+        mov eax, i
+        .BREAK .IF eax >= nChunks
+        lea esi, [eax + eax * 2]
+        add esi, pIdx
+        movzx eax, byte ptr [esi]           ; high, low, middle
+        shl eax, 16
+        movzx ecx, byte ptr [esi + 2]
+        shl ecx, 8
+        or eax, ecx
+        movzx ecx, byte ptr [esi + 1]
+        or eax, ecx
+        mov clen, eax
+        invoke ZfSetInput, dataLo, dataHi
+        invoke ZfSmartInflate
+        mov eax, clen
+        add dataLo, eax
+        adc dataHi, 0
+        inc i
+    .ENDW
+    invoke ZfOutFinal
+    .IF g_zfErr == 0
+        mov eax, g_zfTotHi
+        .IF eax > totHi
+            mov ok, TRUE
+        .ELSEIF eax == totHi
+            mov eax, g_zfTotLo
+            .IF eax >= totLo
+                mov ok, TRUE
+            .ENDIF
+        .ENDIF
+    .ENDIF
+    invoke ZfExpandFree
+done:
+    invoke VfsFreeMem, pIdx
+    invoke CloseHandle, hIn
+    .IF hOut != INVALID_HANDLE_VALUE
+        invoke CloseHandle, hOut
+        .IF ok == 0
+            invoke DeleteFileW, pszDst
+        .ENDIF
+    .ENDIF
+    mov eax, ok
+    ret
+DaaExpandFile ENDP
 
 END

@@ -55,7 +55,7 @@ The program is one small executable with no runtime dependencies.
 | GCM | .gcm .iso | Yes | No | Big-endian FST reader; files need no block alignment |
 | NKit | .nkit.iso | Planned | No | Wii / GameCube |
 | ISZ | .isz | Yes | No | UltraISO: zlib, raw and zero chunks; bzip2 and AES declined |
-| DAA | .daa | Planned | No | PowerISO: deflate / LZMA chunks |
+| DAA | .daa | Yes | No | PowerISO v0x100 deflate; v0x110, LZMA and encrypted declined |
 | UIF | .uif | Planned | No | MagicISO |
 | BlindWrite | .b5t .b6t .bwt | Planned | No | |
 | C2D | .c2d | Planned | No | WinOnCD |
@@ -75,9 +75,9 @@ and then open like any other image, the same way ECM does.
 
 | Codec | Status | Used by |
 | --- | --- | --- |
-| DEFLATE (inflate) | Yes | .gz, .zip, .cso, .gcz, .dax, .jso, .isz (raw and zlib framing, auto-detected); later DAA, PBP, CHD |
+| DEFLATE (inflate) | Yes | .gz, .zip, .cso, .gcz, .dax, .jso, .isz (raw and zlib framing, auto-detected); later PBP, CHD |
 | DEFLATE (compress) | Yes | Save As gzip ISO (fixed Huffman, 32 KB window) |
-| LZMA | Planned | DAA, ISZ, CHD, RVZ |
+| LZMA | Planned | DAA v0x110, CHD, RVZ |
 | bzip2 | Planned | ISZ, RVZ |
 | zstd | Planned | RVZ |
 | LZ4 | Yes | ZSO, CISO v2 |

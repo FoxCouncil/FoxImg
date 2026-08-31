@@ -955,11 +955,13 @@ WSTR szCtDax, <DAX>
 WSTR szCtZso, <ZSO>
 WSTR szCtJso, <JSO>
 WSTR szCtIsz, <ISZ>
+WSTR szCtDaa, <DAA>
 WSTR szExtGcz, <.gcz>
 WSTR szExtDax, <.dax>
 WSTR szExtZso, <.zso>
 WSTR szExtJso, <.jso>
 WSTR szExtIsz, <.isz>
+WSTR szExtDaa, <.daa>
 
 .code
 
@@ -1050,6 +1052,17 @@ CtOpenIsz PROC pszPath:DWORD
     invoke CtFinish, addr szOut, 0, 0, 0, 0, offset szCtIsz
     ret
 CtOpenIsz ENDP
+
+CtOpenDaa PROC pszPath:DWORD
+    LOCAL szOut[MAX_PATH]:WORD
+    invoke CtTempOut, addr szOut, pszPath
+    invoke DaaExpandFile, pszPath, addr szOut
+    .IF eax == 0
+        ret
+    .ENDIF
+    invoke CtFinish, addr szOut, 0, 0, 0, 0, offset szCtDaa
+    ret
+CtOpenDaa ENDP
 
 ; ---------------------------------------------------------------------------
 ; Entry points
@@ -1151,6 +1164,11 @@ CtResolve PROC pszPath:DWORD
     invoke HasExt, pszPath, offset szExtIsz
     .IF eax != 0
         invoke CtOpenIsz, pszPath
+        ret
+    .ENDIF
+    invoke HasExt, pszPath, offset szExtDaa
+    .IF eax != 0
+        invoke CtOpenDaa, pszPath
         ret
     .ENDIF
     xor eax, eax
