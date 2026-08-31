@@ -952,8 +952,14 @@ WSTR szExtCso, <.cso>
 WSTR szExtCiso, <.ciso>
 WSTR szCtGcz, <GCZ>
 WSTR szCtDax, <DAX>
+WSTR szCtZso, <ZSO>
+WSTR szCtJso, <JSO>
+WSTR szCtIsz, <ISZ>
 WSTR szExtGcz, <.gcz>
 WSTR szExtDax, <.dax>
+WSTR szExtZso, <.zso>
+WSTR szExtJso, <.jso>
+WSTR szExtIsz, <.isz>
 
 .code
 
@@ -1011,6 +1017,39 @@ CtOpenDax PROC pszPath:DWORD
     invoke CtFinish, addr szOut, 0, 0, 2048, 0, offset szCtDax
     ret
 CtOpenDax ENDP
+
+CtOpenZso PROC pszPath:DWORD
+    LOCAL szOut[MAX_PATH]:WORD
+    invoke CtTempOut, addr szOut, pszPath
+    invoke CsoExpandFile, pszPath, addr szOut   ; same expander, ZISO magic selects LZ4
+    .IF eax == 0
+        ret
+    .ENDIF
+    invoke CtFinish, addr szOut, 0, 0, 2048, 0, offset szCtZso
+    ret
+CtOpenZso ENDP
+
+CtOpenJso PROC pszPath:DWORD
+    LOCAL szOut[MAX_PATH]:WORD
+    invoke CtTempOut, addr szOut, pszPath
+    invoke JsoExpandFile, pszPath, addr szOut
+    .IF eax == 0
+        ret
+    .ENDIF
+    invoke CtFinish, addr szOut, 0, 0, 2048, 0, offset szCtJso
+    ret
+CtOpenJso ENDP
+
+CtOpenIsz PROC pszPath:DWORD
+    LOCAL szOut[MAX_PATH]:WORD
+    invoke CtTempOut, addr szOut, pszPath
+    invoke IszExpandFile, pszPath, addr szOut
+    .IF eax == 0
+        ret
+    .ENDIF
+    invoke CtFinish, addr szOut, 0, 0, 0, 0, offset szCtIsz
+    ret
+CtOpenIsz ENDP
 
 ; ---------------------------------------------------------------------------
 ; Entry points
@@ -1097,6 +1136,21 @@ CtResolve PROC pszPath:DWORD
     invoke HasExt, pszPath, offset szExtDax
     .IF eax != 0
         invoke CtOpenDax, pszPath
+        ret
+    .ENDIF
+    invoke HasExt, pszPath, offset szExtZso
+    .IF eax != 0
+        invoke CtOpenZso, pszPath
+        ret
+    .ENDIF
+    invoke HasExt, pszPath, offset szExtJso
+    .IF eax != 0
+        invoke CtOpenJso, pszPath
+        ret
+    .ENDIF
+    invoke HasExt, pszPath, offset szExtIsz
+    .IF eax != 0
+        invoke CtOpenIsz, pszPath
         ret
     .ENDIF
     xor eax, eax

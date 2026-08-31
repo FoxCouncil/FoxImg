@@ -43,10 +43,10 @@ The program is one small executable with no runtime dependencies.
 | CD-i | .iso .bin | Yes | No | Green Book descriptors beside CD001 |
 | gzip | .iso.gz .gz | Yes | Yes | Any image inside; Save As writes a gzip ISO |
 | zip | .zip | Yes | No | Largest stored or deflated entry, CRC verified |
-| CSO / CISO | .cso .ciso | Yes | No | v0/v1 deflate blocks (PSP, Dreamcast tooling) |
-| ZSO | .zso | Planned | No | CISO layout with LZ4 blocks |
+| CSO / CISO | .cso .ciso | Yes | No | v0/v1/v2; deflate and LZ4 blocks (PSP, Dreamcast tooling) |
+| ZSO | .zso | Yes | No | CISO layout with LZ4 blocks |
 | DAX | .dax | Yes | No | PSP: zlib frames and raw NC areas |
-| JSO | .jso | Planned | No | PSP, deflate blocks |
+| JSO | .jso | Yes | No | PSP: deflate method; the rare LZO method is declined |
 | PBP | .pbp | Planned | No | PSP EBOOT with the ISO inside DATA.PSAR |
 | CHD | .chd | Planned | No | MAME: zlib / LZMA / FLAC hunks |
 | GCZ | .gcz | Yes | No | Dolphin: zlib blocks, stored blocks |
@@ -54,7 +54,7 @@ The program is one small executable with no runtime dependencies.
 | WBFS | .wbfs | Planned | No | Wii backup file system |
 | GCM | .gcm .iso | Yes | No | Big-endian FST reader; files need no block alignment |
 | NKit | .nkit.iso | Planned | No | Wii / GameCube |
-| ISZ | .isz | Planned | No | UltraISO: zlib / bzip2 chunks |
+| ISZ | .isz | Yes | No | UltraISO: zlib, raw and zero chunks; bzip2 and AES declined |
 | DAA | .daa | Planned | No | PowerISO: deflate / LZMA chunks |
 | UIF | .uif | Planned | No | MagicISO |
 | BlindWrite | .b5t .b6t .bwt | Planned | No | |
@@ -75,12 +75,12 @@ and then open like any other image, the same way ECM does.
 
 | Codec | Status | Used by |
 | --- | --- | --- |
-| DEFLATE (inflate) | Yes | .gz, .zip, .cso, .gcz, .dax (raw and zlib framing); later ISZ, DAA, JSO, PBP, CHD |
+| DEFLATE (inflate) | Yes | .gz, .zip, .cso, .gcz, .dax, .jso, .isz (raw and zlib framing, auto-detected); later DAA, PBP, CHD |
 | DEFLATE (compress) | Yes | Save As gzip ISO (fixed Huffman, 32 KB window) |
 | LZMA | Planned | DAA, ISZ, CHD, RVZ |
 | bzip2 | Planned | ISZ, RVZ |
 | zstd | Planned | RVZ |
-| LZ4 | Planned | ZSO |
+| LZ4 | Yes | ZSO, CISO v2 |
 | FLAC | Planned | CHD audio tracks |
 
 ## Download

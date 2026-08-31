@@ -54,6 +54,9 @@ g_zfLens        db 320 dup(?)           ; scratch code lengths (max 286 + 30)
 
 .code
 
+ZfSmartInflate  PROTO
+Lz4Block        PROTO :DWORD
+
 ; ---------------------------------------------------------------------------
 ; Input: sequential bytes through FileReadAt so wrappers can seek by resetting the offset
 ; ---------------------------------------------------------------------------
@@ -943,6 +946,9 @@ CsoExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
     LOCAL remHi:DWORD
     LOCAL thisCb:DWORD
     LOCAL e0:DWORD
+    LOCAL csize:DWORD
+    LOCAL isZso:DWORD
+    LOCAL isV2:DWORD
     LOCAL offLo:DWORD
     LOCAL offHi:DWORD
     LOCAL ok:DWORD
@@ -957,17 +963,30 @@ CsoExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
     .ENDIF
     mov hIn, eax
     invoke FileReadAt, hIn, 0, 0, addr hdr, 24
-    .IF eax != 24 || dword ptr hdr[0] != 4F534943h      ; "CISO"
+    .IF eax != 24
+        jmp done
+    .ENDIF
+    mov isZso, 0
+    mov isV2, 0
+    mov eax, dword ptr hdr[0]
+    .IF eax == 4F53495Ah                    ; "ZISO": LZ4 blocks
+        mov isZso, 1
+    .ELSEIF eax != 4F534943h                ; "CISO"
         jmp done
     .ENDIF
     movzx eax, byte ptr hdr[20]
-    .IF eax > 1                             ; v2 changes the index semantics
+    .IF eax == 2 && isZso == 0              ; CISO v2 mixes deflate and LZ4 per block
+        mov isV2, 1
+    .ELSEIF eax > 1
         jmp done
     .ENDIF
     mov eax, dword ptr hdr[16]
     mov blkSize, eax
     .IF eax < 512 || eax > 1024 * 1024
         jmp done
+    .ENDIF
+    .IF (isZso != 0 || isV2 != 0) && eax > 32768
+        jmp done                            ; LZ4 back references must stay inside the kept window
     .ENDIF
     lea ecx, [eax - 1]
     test eax, ecx
@@ -1028,10 +1047,15 @@ CsoExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
         mov eax, i
         .BREAK .IF eax >= nBlk
         mov ecx, pIdx
+        mov edx, dword ptr [ecx + eax * 4 + 4]
+        and edx, 7FFFFFFFh
         mov eax, dword ptr [ecx + eax * 4]
         mov e0, eax
         and eax, 7FFFFFFFh
+        sub edx, eax
         mov ecx, alignSh
+        shl edx, cl
+        mov csize, edx                      ; compressed span, from the next index entry
         .IF ecx == 0
             mov offLo, eax
             mov offHi, 0
@@ -1052,11 +1076,33 @@ CsoExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
         .ENDIF
         mov thisCb, eax
         invoke ZfSetInput, offLo, offHi
-        mov eax, e0
-        .IF eax & 80000000h
-            invoke ZfRawCopy, thisCb
+        .IF isV2 != 0
+            ; v2: a full-size span is stored; the top bit picks LZ4 over deflate
+            mov eax, csize
+            .IF eax >= blkSize
+                invoke ZfRawCopy, thisCb
+            .ELSE
+                mov eax, e0
+                .IF eax & 80000000h
+                    invoke Lz4Block, csize
+                .ELSE
+                    invoke ZfSmartInflate
+                .ENDIF
+            .ENDIF
+        .ELSEIF isZso != 0
+            mov eax, e0
+            .IF eax & 80000000h
+                invoke ZfRawCopy, thisCb
+            .ELSE
+                invoke Lz4Block, csize
+            .ENDIF
         .ELSE
-            invoke ZfInflate
+            mov eax, e0
+            .IF eax & 80000000h
+                invoke ZfRawCopy, thisCb
+            .ELSE
+                invoke ZfSmartInflate
+            .ENDIF
         .ENDIF
         mov eax, thisCb
         sub remLo, eax
@@ -1565,6 +1611,154 @@ ZfZlibInflate PROC
     ret
 ZfZlibInflate ENDP
 
+; Deflate stream that may or may not carry a zlib wrapper (CISO writers differ):
+; consume two bytes, and when they do not look like a zlib header, feed them back
+; through the bit accumulator so the raw stream decodes intact.
+ZfSmartInflate PROC USES ebx
+    LOCAL b1:DWORD
+    invoke ZfBits, 8
+    mov ebx, eax
+    invoke ZfBits, 8
+    mov b1, eax
+    mov ecx, ebx
+    shl ecx, 8
+    or ecx, eax                             ; CMF*256 + FLG
+    mov edx, ebx
+    and edx, 0Fh
+    .IF edx == 8 && ebx < 80h
+        push ecx
+        xor edx, edx
+        mov eax, ecx
+        mov ecx, 31
+        div ecx
+        pop ecx
+        .IF edx == 0                        ; valid zlib check bits
+            .IF ecx & 20h                   ; FDICT (bit 5 of FLG) unsupported
+                mov g_zfErr, 1
+                xor eax, eax
+                ret
+            .ENDIF
+            invoke ZfInflate
+            ret
+        .ENDIF
+    .ENDIF
+    mov eax, b1                             ; not zlib: replay both bytes, LSB first
+    shl eax, 8
+    or eax, ebx
+    mov g_zfBitBuf, eax
+    mov g_zfBitCnt, 16
+    invoke ZfInflate
+    ret
+ZfSmartInflate ENDP
+
+; cb zero bytes to the output
+ZfPutZeros PROC USES edi ebx cb:DWORD
+    mov ebx, cb
+    .WHILE ebx != 0 && g_zfErr == 0
+        .IF g_zfOutPos >= ZF_OUTBUF
+            invoke ZfOutFlush
+        .ENDIF
+        mov eax, ZF_OUTBUF
+        sub eax, g_zfOutPos
+        .IF eax > ebx
+            mov eax, ebx
+        .ENDIF
+        mov edi, g_zfOut
+        add edi, g_zfOutPos
+        mov ecx, eax
+        push eax
+        xor eax, eax
+        rep stosb
+        pop eax
+        add g_zfOutPos, eax
+        sub ebx, eax
+    .ENDW
+    ret
+ZfPutZeros ENDP
+
+; ---------------------------------------------------------------------------
+; LZ4 raw block (as ZSO / CISO v2 store them): token, literals, then matches of
+; up to 65535 back. Blocks stay far below the 32 KB retained window, so back
+; references always land inside the output buffer.
+; ---------------------------------------------------------------------------
+Lz4Block PROC USES esi edi ebx inLen:DWORD
+    LOCAL consumed:DWORD
+    LOCAL tok:DWORD
+    LOCAL litLen:DWORD
+    LOCAL mLen:DWORD
+    LOCAL dist:DWORD
+    mov consumed, 0
+    .WHILE g_zfErr == 0
+        invoke ZfInByte
+        inc consumed
+        mov tok, eax
+        shr eax, 4
+        mov litLen, eax
+        .IF eax == 15
+            .WHILE g_zfErr == 0
+                invoke ZfInByte
+                inc consumed
+                add litLen, eax
+                .BREAK .IF eax != 255
+            .ENDW
+        .ENDIF
+        mov eax, litLen
+        add consumed, eax
+        .WHILE litLen != 0 && g_zfErr == 0
+            invoke ZfInByte
+            invoke ZfPutB, eax
+            dec litLen
+        .ENDW
+        mov eax, consumed
+        .BREAK .IF eax >= inLen             ; the last sequence ends after its literals
+        invoke ZfInByte
+        mov ebx, eax
+        invoke ZfInByte
+        shl eax, 8
+        or ebx, eax
+        add consumed, 2
+        .IF ebx == 0
+            mov g_zfErr, 1
+            .BREAK
+        .ENDIF
+        mov dist, ebx
+        mov eax, tok
+        and eax, 15
+        add eax, 4
+        mov mLen, eax
+        .IF eax == 19                       ; 15 + 4: extension bytes follow
+            .WHILE g_zfErr == 0
+                invoke ZfInByte
+                inc consumed
+                add mLen, eax
+                .BREAK .IF eax != 255
+            .ENDW
+        .ENDIF
+        .WHILE mLen != 0 && g_zfErr == 0
+            .IF g_zfOutPos >= ZF_OUTBUF
+                invoke ZfOutFlush
+            .ENDIF
+            mov eax, dist
+            .IF eax > g_zfOutPos
+                mov g_zfErr, 1
+                .BREAK
+            .ENDIF
+            mov ecx, mLen
+            .IF ecx > 512
+                mov ecx, 512
+            .ENDIF
+            sub mLen, ecx
+            mov edi, g_zfOut
+            add edi, g_zfOutPos
+            mov esi, edi
+            sub esi, dist
+            add g_zfOutPos, ecx
+            rep movsb                       ; forward copy repeats the pattern for short distances
+        .ENDW
+    .ENDW
+    ret
+Lz4Block ENDP
+
 ; ---------------------------------------------------------------------------
 ; GCZ (Dolphin): 32-byte header, 64-bit block pointers (bit 63 = stored raw),
 ; Adler hashes (skipped), one zlib stream per block
@@ -1871,5 +2065,336 @@ done:
     mov eax, ok
     ret
 DaxExpandFile ENDP
+
+; ---------------------------------------------------------------------------
+; JSO / JISO (PSP): 48-byte header, CISO-style dword index, optional 4-byte
+; per-block headers; deflate blocks (method 1), stored when span == block size.
+; Method 0 is LZO, which this build does not carry yet.
+; ---------------------------------------------------------------------------
+JSO_IDXMAX      equ 32 * 1024 * 1024
+
+JsoExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
+    LOCAL hIn:DWORD
+    LOCAL hOut:DWORD
+    LOCAL hdr[48]:BYTE
+    LOCAL blkSize:DWORD
+    LOCAL bhBytes:DWORD
+    LOCAL totCb:DWORD
+    LOCAL nBlk:DWORD
+    LOCAL pIdx:DWORD
+    LOCAL idxCb:DWORD
+    LOCAL i:DWORD
+    LOCAL remCb:DWORD
+    LOCAL thisCb:DWORD
+    LOCAL csize:DWORD
+    LOCAL dataOff:DWORD
+    LOCAL ok:DWORD
+
+    mov ok, FALSE
+    mov hOut, INVALID_HANDLE_VALUE
+    mov pIdx, 0
+    invoke CreateFileW, pszSrc, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    .IF eax == INVALID_HANDLE_VALUE
+        xor eax, eax
+        ret
+    .ENDIF
+    mov hIn, eax
+    invoke FileReadAt, hIn, 0, 0, addr hdr, 48
+    .IF eax != 48 || dword ptr hdr[0] != 4F53494Ah      ; "JISO"
+        jmp done
+    .ENDIF
+    movzx eax, byte ptr hdr[10]
+    .IF eax != 1                            ; 1 = deflate; 0 = LZO, unsupported
+        jmp done
+    .ENDIF
+    movzx eax, word ptr hdr[6]
+    mov blkSize, eax
+    .IF eax < 512 || eax > 32768
+        jmp done
+    .ENDIF
+    movzx eax, byte ptr hdr[8]
+    shl eax, 2
+    mov bhBytes, eax
+    mov eax, dword ptr hdr[12]
+    mov totCb, eax
+    mov remCb, eax
+    .IF eax == 0
+        jmp done
+    .ENDIF
+    xor edx, edx
+    add eax, blkSize
+    dec eax
+    div blkSize
+    mov nBlk, eax
+    inc eax
+    shl eax, 2
+    mov idxCb, eax
+    .IF eax > JSO_IDXMAX
+        jmp done
+    .ENDIF
+    invoke VfsAlloc, idxCb
+    mov pIdx, eax
+    .IF eax == 0
+        jmp done
+    .ENDIF
+    invoke FileReadAt, hIn, 48, 0, pIdx, idxCb
+    .IF eax != idxCb
+        jmp done
+    .ENDIF
+    invoke CreateFileW, pszDst, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL
+    .IF eax == INVALID_HANDLE_VALUE
+        jmp done
+    .ENDIF
+    mov hOut, eax
+    invoke ZfExpandInit, hIn, hOut
+    .IF eax == 0
+        jmp done
+    .ENDIF
+    mov i, 0
+    .WHILE g_zfErr == 0
+        mov eax, i
+        .BREAK .IF eax >= nBlk
+        mov ecx, pIdx
+        mov edx, dword ptr [ecx + eax * 4 + 4]
+        and edx, 7FFFFFFFh
+        mov eax, dword ptr [ecx + eax * 4]
+        and eax, 7FFFFFFFh
+        add eax, bhBytes                    ; data begins past the per-block header
+        mov dataOff, eax
+        sub edx, eax
+        mov csize, edx
+        mov eax, blkSize
+        .IF eax > remCb
+            mov eax, remCb
+        .ENDIF
+        mov thisCb, eax
+        invoke ZfSetInput, dataOff, 0
+        mov eax, csize
+        .IF eax >= blkSize                  ; stored block
+            invoke ZfRawCopy, thisCb
+        .ELSE
+            invoke ZfSmartInflate
+        .ENDIF
+        mov eax, thisCb
+        sub remCb, eax
+        inc i
+    .ENDW
+    invoke ZfOutFinal
+    .IF g_zfErr == 0 && g_zfTotHi == 0
+        mov eax, g_zfTotLo
+        .IF eax >= totCb
+            mov ok, TRUE
+        .ENDIF
+    .ENDIF
+    invoke ZfExpandFree
+done:
+    invoke VfsFreeMem, pIdx
+    invoke CloseHandle, hIn
+    .IF hOut != INVALID_HANDLE_VALUE
+        invoke CloseHandle, hOut
+        .IF ok == 0
+            invoke DeleteFileW, pszDst
+        .ENDIF
+    .ENDIF
+    mov eax, ok
+    ret
+JsoExpandFile ENDP
+
+; ---------------------------------------------------------------------------
+; ISZ (UltraISO): 48-byte packed header, chunk pointers of ptr_len bytes with
+; the type in the top two bits (zero / raw / zlib / bzip2), chunks packed from
+; data_offs. Passworded, segmented and bzip2 images are declined.
+; ---------------------------------------------------------------------------
+ISZ_IDXMAX      equ 64 * 1024 * 1024
+
+IszExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
+    LOCAL hIn:DWORD
+    LOCAL hOut:DWORD
+    LOCAL hdr[48]:BYTE
+    LOCAL blkSize:DWORD
+    LOCAL nBlk:DWORD
+    LOCAL ptrLen:DWORD
+    LOCAL flagShift:DWORD
+    LOCAL lenMask:DWORD
+    LOCAL ptrOffs:DWORD
+    LOCAL totLo:DWORD
+    LOCAL totHi:DWORD
+    LOCAL pIdx:DWORD
+    LOCAL idxCb:DWORD
+    LOCAL i:DWORD
+    LOCAL remLo:DWORD
+    LOCAL remHi:DWORD
+    LOCAL thisCb:DWORD
+    LOCAL chunkLen:DWORD
+    LOCAL dataLo:DWORD
+    LOCAL dataHi:DWORD
+    LOCAL ok:DWORD
+
+    mov ok, FALSE
+    mov hOut, INVALID_HANDLE_VALUE
+    mov pIdx, 0
+    invoke CreateFileW, pszSrc, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    .IF eax == INVALID_HANDLE_VALUE
+        xor eax, eax
+        ret
+    .ENDIF
+    mov hIn, eax
+    invoke FileReadAt, hIn, 0, 0, addr hdr, 48
+    .IF eax != 48 || dword ptr hdr[0] != 215A7349h      ; "IsZ!"
+        jmp done
+    .ENDIF
+    .IF byte ptr hdr[16] != 0               ; passworded
+        jmp done
+    .ENDIF
+    .IF dword ptr hdr[39] != 0 || byte ptr hdr[34] != 0 ; segmented
+        jmp done
+    .ENDIF
+    ; total bytes = sector size * total sectors
+    movzx eax, word ptr hdr[10]
+    mov ecx, dword ptr hdr[12]
+    mul ecx
+    mov totLo, eax
+    mov totHi, edx
+    mov remLo, eax
+    mov remHi, edx
+    .IF eax == 0 && edx == 0
+        jmp done
+    .ENDIF
+    mov eax, dword ptr hdr[25]
+    mov nBlk, eax
+    mov eax, dword ptr hdr[29]
+    mov blkSize, eax
+    .IF eax < 512 || eax > 1024 * 1024
+        jmp done
+    .ENDIF
+    mov eax, dword ptr hdr[43]
+    mov dataLo, eax
+    mov dataHi, 0
+    mov eax, dword ptr hdr[35]
+    mov ptrOffs, eax
+    .IF eax == 0
+        ; no chunk table: the image is stored raw at the data offset
+        .IF remHi != 0
+            jmp done
+        .ENDIF
+        invoke CreateFileW, pszDst, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL
+        .IF eax == INVALID_HANDLE_VALUE
+            jmp done
+        .ENDIF
+        mov hOut, eax
+        invoke ZfExpandInit, hIn, hOut
+        .IF eax == 0
+            jmp done
+        .ENDIF
+        invoke ZfSetInput, dataLo, 0
+        invoke ZfRawCopy, remLo
+        jmp finish
+    .ENDIF
+    movzx eax, byte ptr hdr[33]
+    mov ptrLen, eax
+    .IF eax < 2 || eax > 4
+        jmp done
+    .ENDIF
+    shl eax, 3
+    sub eax, 2
+    mov flagShift, eax
+    mov ecx, eax
+    mov eax, 1
+    shl eax, cl
+    dec eax
+    mov lenMask, eax
+    .IF nBlk == 0
+        jmp done
+    .ENDIF
+    mov eax, nBlk
+    mul ptrLen
+    .IF edx != 0 || eax > ISZ_IDXMAX
+        jmp done
+    .ENDIF
+    mov idxCb, eax
+    add eax, 4                              ; slack so the last pointer reads as a dword
+    invoke VfsAlloc, eax
+    mov pIdx, eax
+    .IF eax == 0
+        jmp done
+    .ENDIF
+    invoke FileReadAt, hIn, ptrOffs, 0, pIdx, idxCb
+    .IF eax != idxCb
+        jmp done
+    .ENDIF
+    invoke CreateFileW, pszDst, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL
+    .IF eax == INVALID_HANDLE_VALUE
+        jmp done
+    .ENDIF
+    mov hOut, eax
+    invoke ZfExpandInit, hIn, hOut
+    .IF eax == 0
+        jmp done
+    .ENDIF
+    mov i, 0
+    .WHILE g_zfErr == 0
+        mov eax, i
+        .BREAK .IF eax >= nBlk
+        mul ptrLen
+        mov esi, pIdx
+        add esi, eax
+        mov eax, dword ptr [esi]            ; over-read is inside the slack
+        mov ecx, flagShift
+        mov ebx, eax
+        shr ebx, cl
+        and ebx, 3                          ; chunk type
+        and eax, lenMask
+        mov chunkLen, eax
+        mov eax, blkSize
+        .IF remHi == 0 && eax > remLo
+            mov eax, remLo
+        .ENDIF
+        mov thisCb, eax
+        .IF ebx == 0                        ; zeros
+            invoke ZfPutZeros, thisCb
+        .ELSEIF ebx == 1                    ; raw
+            invoke ZfSetInput, dataLo, dataHi
+            invoke ZfRawCopy, thisCb
+        .ELSEIF ebx == 2                    ; zlib
+            invoke ZfSetInput, dataLo, dataHi
+            invoke ZfSmartInflate
+        .ELSE                               ; bzip2, not carried
+            mov g_zfErr, 1
+            .BREAK
+        .ENDIF
+        mov eax, chunkLen
+        add dataLo, eax
+        adc dataHi, 0
+        mov eax, thisCb
+        sub remLo, eax
+        sbb remHi, 0
+        inc i
+    .ENDW
+finish:
+    invoke ZfOutFinal
+    .IF g_zfErr == 0
+        mov eax, g_zfTotHi
+        .IF eax > totHi
+            mov ok, TRUE
+        .ELSEIF eax == totHi
+            mov eax, g_zfTotLo
+            .IF eax >= totLo
+                mov ok, TRUE
+            .ENDIF
+        .ENDIF
+    .ENDIF
+    invoke ZfExpandFree
+done:
+    invoke VfsFreeMem, pIdx
+    invoke CloseHandle, hIn
+    .IF hOut != INVALID_HANDLE_VALUE
+        invoke CloseHandle, hOut
+        .IF ok == 0
+            invoke DeleteFileW, pszDst
+        .ENDIF
+    .ENDIF
+    mov eax, ok
+    ret
+IszExpandFile ENDP
 
 END
