@@ -3474,6 +3474,139 @@ ChTreeDecode PROC USES ebx esi
     ret
 ChTreeDecode ENDP
 
+; Append cb bytes from memory to the output, honouring flush boundaries
+ZfPutMem PROC USES esi edi ebx pSrc:DWORD, cb:DWORD
+    mov esi, pSrc
+    mov ebx, cb
+    .WHILE ebx != 0 && g_zfErr == 0
+        .IF g_zfOutPos >= ZF_OUTBUF
+            invoke ZfOutFlush
+        .ENDIF
+        mov eax, ZF_OUTBUF
+        sub eax, g_zfOutPos
+        .IF eax > ebx
+            mov eax, ebx
+        .ENDIF
+        mov edi, g_zfOut
+        add edi, g_zfOutPos
+        mov ecx, eax
+        push eax
+        rep movsb
+        pop eax
+        add g_zfOutPos, eax
+        sub ebx, eax
+    .ENDW
+    ret
+ZfPutMem ENDP
+
+.data
+szCdSync        db 00h, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 00h
+
+.code
+
+; One CD hunk (cdzl or cdlz): ecc bitmap and base-length header, then the sector
+; halves (2352 bytes each) as one stream. The subcode stream that follows is of
+; no use for browsing, so it stays in the file untouched; the output is a plain
+; 2352-byte raw image. Flagged frames get their sync pattern back; the stripped
+; ECC parity stays zero, which no reader here ever checks (as with ECM).
+ChdCdHunk PROC USES esi edi ebx offLo:DWORD, offHi:DWORD, cb:DWORD, isLzma:DWORD
+    LOCAL frames:DWORD
+    LOCAL eccBytes:DWORD
+    LOCAL clBytes:DWORD
+    LOCAL save0:DWORD
+    LOCAL baseLo:DWORD
+    LOCAL baseHi:DWORD
+    LOCAL i:DWORD
+    LOCAL hdrbuf[24]:BYTE
+
+    mov eax, cb
+    xor edx, edx
+    mov ecx, 2352
+    div ecx
+    .IF edx != 0 || eax == 0
+        mov g_zfErr, 1
+        ret
+    .ENDIF
+    mov frames, eax
+    mov ecx, eax
+    add eax, 7
+    shr eax, 3
+    mov eccBytes, eax
+    .IF eax > 20
+        mov g_zfErr, 1
+        ret
+    .ENDIF
+    imul ecx, 2448                      ; the length header width follows the stored hunk size
+    mov eax, 2
+    .IF ecx >= 65536
+        inc eax
+    .ENDIF
+    mov clBytes, eax
+    mov eax, eccBytes
+    add eax, clBytes
+    push eax
+    invoke FileReadAt, g_zfFile, offLo, offHi, addr hdrbuf, eax
+    pop ecx
+    .IF eax != ecx
+        mov g_zfErr, 1
+        ret
+    .ENDIF
+    ; the whole hunk must stay in the buffer so sync patching can reach it
+    mov eax, g_zfOutPos
+    add eax, cb
+    add eax, 1024
+    .IF eax > ZF_OUTBUF
+        invoke ZfOutFlush
+    .ENDIF
+    mov eax, g_zfOutPos
+    mov save0, eax
+    mov eax, eccBytes
+    add eax, clBytes
+    add eax, offLo
+    mov baseLo, eax
+    mov eax, offHi
+    adc eax, 0
+    mov baseHi, eax
+    invoke ZfSetInput, baseLo, baseHi
+    .IF isLzma != 0
+        invoke LzmaStart
+        invoke LzmaDecode, cb
+    .ELSE
+        invoke ZfInflate
+    .ENDIF
+    mov eax, g_zfOutPos
+    sub eax, save0
+    .IF eax != cb || g_zfErr != 0
+        mov g_zfErr, 1
+        ret
+    .ENDIF
+    ; restore sync for the frames the compressor stripped
+    mov i, 0
+    .WHILE TRUE
+        mov eax, i
+        .BREAK .IF eax >= frames
+        mov ecx, eax
+        shr eax, 3
+        and ecx, 7
+        movzx eax, byte ptr hdrbuf[eax]
+        mov edx, 80h
+        shr edx, cl
+        test eax, edx
+        .IF !ZERO?
+            mov edi, g_zfOut
+            add edi, save0
+            mov ecx, i
+            imul ecx, 2352
+            add edi, ecx
+            mov esi, offset szCdSync
+            mov ecx, 12
+            rep movsb
+        .ENDIF
+        inc i
+    .ENDW
+    ret
+ChdCdHunk ENDP
+
 ChdExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
     LOCAL hIn:DWORD
     LOCAL hOut:DWORD
@@ -3484,6 +3617,8 @@ ChdExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
     LOCAL mapLo:DWORD
     LOCAL mapHi:DWORD
     LOCAL hunkBytes:DWORD
+    LOCAL hunkOut:DWORD
+    LOCAL isCd:DWORD
     LOCAL nHunks:DWORD
     LOCAL mapLen:DWORD
     LOCAL dsLo:DWORD
@@ -3512,6 +3647,7 @@ ChdExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
     mov pMap, 0
     mov pScratch, 0
     mov haveLzma, 0
+    mov isCd, 0
     invoke CreateFileW, pszSrc, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
     .IF eax == INVALID_HANDLE_VALUE
         xor eax, eax
@@ -3536,8 +3672,13 @@ ChdExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
     .WHILE ebx < 4
         mov eax, dword ptr hdr[ebx * 4 + 16]
         mov dword ptr comps[ebx * 4], eax
-        .IF eax == 616D7A6Ch            ; "lzma"
+        .IF eax == 616D7A6Ch                ; "lzma"
             mov haveLzma, 1
+        .ELSEIF eax == 7A6C6463h            ; "cdlz"
+            mov haveLzma, 1
+            mov isCd, 1
+        .ELSEIF eax == 6C7A6463h            ; "cdzl"
+            mov isCd, 1
         .ELSEIF eax != 0 && eax != 62696C7Ah    ; "zlib"
             jmp done
         .ENDIF
@@ -3572,8 +3713,40 @@ ChdExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
     mov mapLo, eax
     invoke BSwap32, dword ptr hdr[56]
     mov hunkBytes, eax
+    mov hunkOut, eax
     .IF eax < 512 || eax > CHD_HUNKMAX
         jmp done
+    .ENDIF
+    .IF isCd != 0
+        ; output drops the 96 subcode bytes per frame: rescale hunk and totals
+        xor edx, edx
+        mov ecx, 2448
+        div ecx
+        .IF edx != 0 || eax == 0
+            jmp done
+        .ENDIF
+        imul eax, 2352
+        mov hunkOut, eax
+        mov eax, totLo
+        mov edx, totHi
+        mov ecx, 2448
+        mov ebx, eax
+        mov eax, edx
+        xor edx, edx
+        div ecx
+        push eax
+        mov eax, ebx
+        div ecx
+        pop ebx                             ; quotient high dword
+        .IF edx != 0 || ebx != 0
+            jmp done
+        .ENDIF
+        mov ecx, 2352
+        mul ecx
+        mov totLo, eax
+        mov totHi, edx
+        mov remLo, eax
+        mov remHi, edx
     .ENDIF
     ; hunk count = ceil(total / hunk size)
     mov eax, totLo
@@ -3805,7 +3978,7 @@ ChdExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
         mov ecx, i
         shl ecx, 4
         add esi, ecx
-        mov eax, hunkBytes
+        mov eax, hunkOut
         .IF remHi == 0 && eax > remLo
             mov eax, remLo
         .ENDIF
@@ -3814,16 +3987,53 @@ ChdExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
         .IF eax <= 3
             mov ecx, dword ptr comps[eax * 4]
             mov fourcc, ecx
-            invoke ZfSetInput, dword ptr [esi + 8], dword ptr [esi + 12]
-            .IF fourcc == 62696C7Ah     ; zlib: raw deflate
-                invoke ZfInflate
-            .ELSE                       ; lzma
-                invoke LzmaStart
-                invoke LzmaDecode, thisCb
+            .IF fourcc == 6C7A6463h || fourcc == 7A6C6463h      ; cdzl / cdlz
+                xor eax, eax
+                .IF fourcc == 7A6C6463h
+                    inc eax
+                .ENDIF
+                invoke ChdCdHunk, dword ptr [esi + 8], dword ptr [esi + 12], thisCb, eax
+            .ELSE
+                invoke ZfSetInput, dword ptr [esi + 8], dword ptr [esi + 12]
+                .IF fourcc == 62696C7Ah ; zlib: raw deflate
+                    invoke ZfInflate
+                .ELSE                   ; lzma
+                    invoke LzmaStart
+                    invoke LzmaDecode, thisCb
+                .ENDIF
             .ENDIF
         .ELSEIF eax == 4                ; stored
-            invoke ZfSetInput, dword ptr [esi + 8], dword ptr [esi + 12]
-            invoke ZfRawCopy, thisCb
+            .IF isCd != 0
+                mov eax, thisCb
+                xor edx, edx
+                mov ecx, 2352
+                div ecx
+                push eax                    ; frame count
+                mov ecx, 2448
+                mul ecx
+                push eax
+                invoke FileReadAt, hIn, dword ptr [esi + 8], dword ptr [esi + 12], pScratch, eax
+                pop ecx
+                .IF eax != ecx
+                    pop eax
+                    mov g_zfErr, 1
+                    .BREAK
+                .ENDIF
+                pop ecx
+                xor edi, edi
+                .WHILE edi < ecx && g_zfErr == 0
+                    push ecx
+                    mov eax, edi
+                    imul eax, 2448
+                    add eax, pScratch
+                    invoke ZfPutMem, eax, 2352
+                    pop ecx
+                    inc edi
+                .ENDW
+            .ELSE
+                invoke ZfSetInput, dword ptr [esi + 8], dword ptr [esi + 12]
+                invoke ZfRawCopy, thisCb
+            .ENDIF
         .ELSE                           ; self: re-emit an earlier hunk
             mov eax, dword ptr [esi + 8]
             .IF eax >= i
@@ -3832,7 +4042,7 @@ ChdExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
             .ENDIF
             invoke ZfOutFinal           ; everything so far must be on disk
             mov eax, dword ptr [esi + 8]
-            mul hunkBytes
+            mul hunkOut
             invoke FileReadAt, hOut, eax, edx, pScratch, thisCb
             .IF eax != thisCb
                 mov g_zfErr, 1

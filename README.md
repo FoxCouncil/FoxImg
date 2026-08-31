@@ -49,7 +49,7 @@ The program is one small executable with no runtime dependencies.
 | DAX | .dax | Yes | No | PSP: zlib frames and raw NC areas |
 | JSO | .jso | Yes | No | PSP: deflate and LZO methods |
 | PBP | .pbp | Planned | No | PSP EBOOT with the ISO inside DATA.PSAR |
-| CHD | .chd | Yes | No | v5 with zlib / LZMA / stored / self hunks; FLAC, CD codecs and parents declined |
+| CHD | .chd | Yes | No | v5: zlib, LZMA, cdzl, cdlz, stored and self hunks; FLAC audio and parents declined |
 | GCZ | .gcz | Yes | No | Dolphin: zlib blocks, stored blocks |
 | WIA / RVZ | .wia .rvz | Planned | No | Dolphin: zstd / bzip2 / LZMA |
 | WBFS | .wbfs | Planned | No | Wii backup file system |
