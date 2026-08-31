@@ -54,12 +54,17 @@ g_zfFixLS       dw 288 dup(?)
 g_zfFixDC       dw 16 dup(?)
 g_zfFixDS       dw 32 dup(?)
 g_zfLens        db 320 dup(?)           ; scratch code lengths (max 286 + 30)
+g_zfLLut        dw 512 dup(?)           ; 9-bit fast lookups: dynamic literal, dynamic distance
+g_zfDLut        dw 512 dup(?)
+g_zfFixLLut     dw 512 dup(?)           ; and the fixed pair, built once
+g_zfFixDLut     dw 512 dup(?)
 g_ctTracks      dd CT_MAXTRK * 4 dup(?)
 
 .code
 
 ZfSmartInflate  PROTO
 Lz4Block        PROTO :DWORD
+DfRev           PROTO :DWORD,:DWORD
 
 CtTrackAdd PROC offLo:DWORD, offHi:DWORD, pcmBytes:DWORD, audio:DWORD
     mov eax, g_ctNumTracks
@@ -129,26 +134,26 @@ ZfInByte PROC
 ZfInByte ENDP
 
 ; n bits (0-16), LSB first
-ZfBits PROC USES ebx n:DWORD
-    .WHILE TRUE
-        mov eax, g_zfBitCnt
-        .BREAK .IF eax >= n
+ZfBits PROC USES ebx edi n:DWORD
+    mov ebx, g_zfBitBuf
+    mov edi, g_zfBitCnt
+    .WHILE edi < n
         invoke ZfInByte
-        mov ecx, g_zfBitCnt
+        mov ecx, edi
         shl eax, cl
-        or g_zfBitBuf, eax
-        add g_zfBitCnt, 8
+        or ebx, eax
+        add edi, 8
     .ENDW
     mov ecx, n
-    mov ebx, g_zfBitBuf
     mov eax, ebx
     mov edx, 1
     shl edx, cl
     dec edx
     and eax, edx
     shr ebx, cl
+    sub edi, ecx
     mov g_zfBitBuf, ebx
-    sub g_zfBitCnt, ecx
+    mov g_zfBitCnt, edi
     ret
 ZfBits ENDP
 
@@ -309,8 +314,11 @@ ZfRawCopy ENDP
 ; ---------------------------------------------------------------------------
 ; Canonical Huffman: build (counts + symbols sorted by code) and decode bit by bit
 ; ---------------------------------------------------------------------------
-ZfBuild PROC USES esi edi ebx pCnt:DWORD, pSym:DWORD, pLens:DWORD, n:DWORD
+ZfBuild PROC USES esi edi ebx pCnt:DWORD, pSym:DWORD, pLens:DWORD, n:DWORD, pLut:DWORD
     LOCAL offs[16]:WORD
+    LOCAL firstc:DWORD
+    LOCAL lenv:DWORD
+    LOCAL k:DWORD
     mov edi, pCnt
     xor eax, eax
     mov ecx, 16
@@ -359,10 +367,64 @@ ZfBuild PROC USES esi edi ebx pCnt:DWORD, pSym:DWORD, pLens:DWORD, n:DWORD
         .ENDIF
         inc ebx
     .ENDW
+    .IF pLut != 0
+        ; every 9-bit pattern that begins a short code maps straight to its symbol
+        mov edi, pLut
+        xor eax, eax
+        mov ecx, 512
+        rep stosw
+        mov firstc, 0
+        mov esi, pSym
+        mov lenv, 1
+        .WHILE lenv <= 9
+            mov eax, lenv
+            mov ecx, pCnt
+            movzx ebx, word ptr [ecx + eax * 2]
+            mov k, 0
+            .WHILE k != ebx
+                mov eax, firstc
+                add eax, k
+                invoke DfRev, eax, lenv     ; codes read most-significant bit first
+                mov ecx, lenv
+                shl ecx, 12
+                mov edx, ecx
+                movzx ecx, word ptr [esi]
+                or edx, ecx                 ; packed length | symbol
+                mov ecx, eax
+                .WHILE ecx < 512
+                    push ecx
+                    add ecx, ecx
+                    mov edi, pLut
+                    mov word ptr [edi + ecx], dx
+                    pop ecx
+                    push eax
+                    mov eax, 1
+                    push ecx
+                    mov ecx, lenv
+                    shl eax, cl
+                    pop ecx
+                    add ecx, eax
+                    pop eax
+                .ENDW
+                add esi, 2
+                inc k
+            .ENDW
+            mov eax, firstc
+            add eax, ebx
+            shl eax, 1
+            mov firstc, eax
+            inc lenv
+        .ENDW
+        ; symbols with longer codes were consumed above in table order; skip them
+        ; (esi walked exactly the short-code symbols, which come first)
+    .ENDIF
     xor eax, eax
     ret
 ZfBuild ENDP
 
+; Slow path: one bit at a time against the canonical counts. The tables under
+; 10 bits go through the lookup fast path in ZfDecodeFast; this remains for
+; long codes, starved buffers and the code-length code.
 ZfDecode PROC USES ebx pCnt:DWORD, pSym:DWORD
     LOCAL cval:DWORD
     LOCAL first:DWORD
@@ -403,17 +465,59 @@ ZfDecode PROC USES ebx pCnt:DWORD, pSym:DWORD
     ret
 ZfDecode ENDP
 
+; Fast path: nine bits of lookahead resolve most symbols in one table hit.
+; Entries pack length in the top nibble and the symbol below; empty entries
+; and codes longer than the lookahead fall back to the bit walk above.
+ZfDecodeFast PROC USES ebx pCnt:DWORD, pSym:DWORD, pLut:DWORD
+    ; top the accumulator up from the buffered input without erroring at EOF
+    mov ecx, g_zfBitCnt
+    .WHILE ecx < 9
+        mov eax, g_zfInPos
+        .BREAK .IF eax >= g_zfInLen         ; a starved buffer takes the slow path
+        mov edx, g_zfIn
+        movzx eax, byte ptr [edx + eax]
+        inc g_zfInPos
+        shl eax, cl
+        or g_zfBitBuf, eax
+        add ecx, 8
+        mov g_zfBitCnt, ecx
+    .ENDW
+    mov eax, g_zfBitBuf
+    and eax, 511
+    mov ecx, pLut
+    movzx eax, word ptr [ecx + eax * 2]
+    mov ecx, eax
+    shr ecx, 12
+    .IF eax == 0 || ecx > g_zfBitCnt
+        invoke ZfDecode, pCnt, pSym
+        ret
+    .ENDIF
+    shr g_zfBitBuf, cl
+    sub g_zfBitCnt, ecx
+    and eax, 0FFFh
+    ret
+ZfDecodeFast ENDP
+
 ; ---------------------------------------------------------------------------
 ; Block types
 ; ---------------------------------------------------------------------------
 ; The literal/length/distance loop shared by fixed and dynamic blocks
-ZfCodes PROC USES esi edi ebx pLC:DWORD, pLS:DWORD, pDC:DWORD, pDS:DWORD
+ZfCodes PROC USES esi edi ebx pLC:DWORD, pLS:DWORD, pDC:DWORD, pDS:DWORD, pLLut:DWORD, pDLut:DWORD
     LOCAL mlen:DWORD
     LOCAL mdist:DWORD
     .WHILE g_zfErr == 0
-        invoke ZfDecode, pLC, pLS
+        invoke ZfDecodeFast, pLC, pLS, pLLut
         .IF eax < 256
-            invoke ZfPutB, eax
+            mov ecx, g_zfOutPos
+            .IF ecx >= ZF_OUTBUF
+                push eax
+                invoke ZfOutFlush
+                pop eax
+                mov ecx, g_zfOutPos
+            .ENDIF
+            mov edx, g_zfOut
+            mov byte ptr [edx + ecx], al
+            inc g_zfOutPos
         .ELSEIF eax == 256
             xor eax, eax
             ret
@@ -429,7 +533,7 @@ ZfCodes PROC USES esi edi ebx pLC:DWORD, pLS:DWORD, pDC:DWORD, pDS:DWORD
             movzx ecx, word ptr g_zfLenBase[ebx * 2]
             add eax, ecx
             mov mlen, eax
-            invoke ZfDecode, pDC, pDS
+            invoke ZfDecodeFast, pDC, pDS, pDLut
             .IF eax >= 30
                 mov g_zfErr, 1
                 .BREAK
@@ -476,12 +580,16 @@ ZfStored PROC USES ebx
         mov g_zfErr, 1
         ret
     .ENDIF
+    ; drain whole bytes still in the accumulator, then move the rest in bulk
     mov ebx, lenv
-    .WHILE ebx != 0 && g_zfErr == 0
+    .WHILE ebx != 0 && g_zfBitCnt >= 8 && g_zfErr == 0
         invoke ZfBits, 8
         invoke ZfPutB, eax
         dec ebx
     .ENDW
+    .IF ebx != 0 && g_zfErr == 0
+        invoke ZfRawCopy, ebx
+    .ENDIF
     ret
 ZfStored ENDP
 
@@ -502,12 +610,12 @@ ZfInitFixed PROC USES edi
     mov al, 8
     mov ecx, 8
     rep stosb
-    invoke ZfBuild, offset g_zfFixLC, offset g_zfFixLS, offset g_zfLens, 288
+    invoke ZfBuild, offset g_zfFixLC, offset g_zfFixLS, offset g_zfLens, 288, offset g_zfFixLLut
     mov edi, offset g_zfLens
     mov al, 5
     mov ecx, 30
     rep stosb
-    invoke ZfBuild, offset g_zfFixDC, offset g_zfFixDS, offset g_zfLens, 30
+    invoke ZfBuild, offset g_zfFixDC, offset g_zfFixDS, offset g_zfLens, 30, offset g_zfFixDLut
     mov g_zfFixInit, 1
     ret
 ZfInitFixed ENDP
@@ -547,7 +655,7 @@ ZfDynamic PROC USES ebx edi
         mov byte ptr g_zfLens[edx], al
         inc i
     .ENDW
-    invoke ZfBuild, offset g_zfDC, offset g_zfDS, offset g_zfLens, 19
+    invoke ZfBuild, offset g_zfDC, offset g_zfDS, offset g_zfLens, 19, 0
     .IF eax != 0 || g_zfErr != 0
         mov g_zfErr, 1
         ret
@@ -603,19 +711,19 @@ ZfDynamic PROC USES ebx edi
     .IF g_zfErr != 0
         ret
     .ENDIF
-    invoke ZfBuild, offset g_zfLC, offset g_zfLS, offset g_zfLens, hlit
+    invoke ZfBuild, offset g_zfLC, offset g_zfLS, offset g_zfLens, hlit, offset g_zfLLut
     .IF eax != 0
         mov g_zfErr, 1
         ret
     .ENDIF
     mov eax, offset g_zfLens
     add eax, hlit
-    invoke ZfBuild, offset g_zfDC, offset g_zfDS, eax, hdist
+    invoke ZfBuild, offset g_zfDC, offset g_zfDS, eax, hdist, offset g_zfDLut
     .IF eax != 0
         mov g_zfErr, 1
         ret
     .ENDIF
-    invoke ZfCodes, offset g_zfLC, offset g_zfLS, offset g_zfDC, offset g_zfDS
+    invoke ZfCodes, offset g_zfLC, offset g_zfLS, offset g_zfDC, offset g_zfDS, offset g_zfLLut, offset g_zfDLut
     ret
 ZfDynamic ENDP
 
@@ -630,7 +738,7 @@ ZfInflate PROC
             invoke ZfStored
         .ELSEIF eax == 1
             invoke ZfInitFixed
-            invoke ZfCodes, offset g_zfFixLC, offset g_zfFixLS, offset g_zfFixDC, offset g_zfFixDS
+            invoke ZfCodes, offset g_zfFixLC, offset g_zfFixLS, offset g_zfFixDC, offset g_zfFixDS, offset g_zfFixLLut, offset g_zfFixDLut
         .ELSEIF eax == 2
             invoke ZfDynamic
         .ELSE
