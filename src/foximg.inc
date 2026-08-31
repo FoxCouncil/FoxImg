@@ -1271,6 +1271,7 @@ PathDirJoin     PROTO :DWORD,:DWORD,:DWORD      ; pszOut, pszRef, pszName (relat
 FindKeyword     PROTO :DWORD,:DWORD,:DWORD      ; pBuf, cb, pszKeyA -> pointer past it or 0
 ParseUint       PROTO :DWORD                    ; pText -> eax value, edx next
 ParseName       PROTO :DWORD,:DWORD             ; pText, pszOut -> edx next
+FileOpenRead    PROTO :DWORD                    ; pszPath -> handle or INVALID_HANDLE_VALUE
 FileReadAt      PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD  ; hFile, offLo, offHi, pDst, cb -> bytes read
 FileSize64      PROTO :DWORD,:DWORD,:DWORD      ; hFile, pLo, pHi
 ReadTextFile    PROTO :DWORD,:DWORD             ; pszPath, pcb -> heap buffer or 0

@@ -303,7 +303,7 @@ IsoOpen PROC USES esi edi ebx pszPath:DWORD
     .ENDIF
 
 retry_open:
-    invoke CreateFileW, pData, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL
+    invoke FileOpenRead, pData
     .IF eax == INVALID_HANDLE_VALUE
         xor eax, eax
         ret

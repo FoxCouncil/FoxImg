@@ -240,6 +240,21 @@ ZfOutFinal PROC
     ret
 ZfOutFinal ENDP
 
+; TRUE when no error struck and at least expHi:expLo bytes came out
+ZfCheckTotal PROC expLo:DWORD, expHi:DWORD
+    xor eax, eax
+    .IF g_zfErr == 0
+        mov ecx, g_zfTotLo
+        mov edx, g_zfTotHi
+        sub ecx, expLo
+        sbb edx, expHi
+        .IF !CARRY?
+            inc eax
+        .ENDIF
+    .ENDIF
+    ret
+ZfCheckTotal ENDP
+
 ZfPutB PROC b:DWORD
     mov eax, g_zfOutPos
     .IF eax >= ZF_OUTBUF
@@ -712,7 +727,7 @@ GzExpandFile PROC USES ebx pszSrc:DWORD, pszDst:DWORD
     LOCAL flg:DWORD
     LOCAL ok:DWORD
     mov ok, FALSE
-    invoke CreateFileW, pszSrc, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    invoke FileOpenRead, pszSrc
     .IF eax == INVALID_HANDLE_VALUE
         xor eax, eax
         ret
@@ -831,7 +846,7 @@ ZipExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
     mov ok, FALSE
     mov haveBest, FALSE
     mov hOut, INVALID_HANDLE_VALUE
-    invoke CreateFileW, pszSrc, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    invoke FileOpenRead, pszSrc
     .IF eax == INVALID_HANDLE_VALUE
         xor eax, eax
         ret
@@ -1001,7 +1016,7 @@ CsoExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
     mov ok, FALSE
     mov hOut, INVALID_HANDLE_VALUE
     mov pIdx, 0
-    invoke CreateFileW, pszSrc, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    invoke FileOpenRead, pszSrc
     .IF eax == INVALID_HANDLE_VALUE
         xor eax, eax
         ret
@@ -1152,17 +1167,8 @@ CsoExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
     .ENDW
     invoke ZfOutFinal
     ; success when everything the header promised came out
-    .IF g_zfErr == 0
-        mov eax, g_zfTotHi
-        .IF eax > totHi
-            mov ok, TRUE
-        .ELSEIF eax == totHi
-            mov eax, g_zfTotLo
-            .IF eax >= totLo
-                mov ok, TRUE
-            .ENDIF
-        .ENDIF
-    .ENDIF
+    invoke ZfCheckTotal, totLo, totHi
+    mov ok, eax
     invoke ZfExpandFree
 done:
     invoke VfsFreeMem, pIdx
@@ -1504,7 +1510,7 @@ GzCompressFile PROC USES ebx pszSrc:DWORD, pszDst:DWORD
     LOCAL ok:DWORD
 
     mov ok, FALSE
-    invoke CreateFileW, pszSrc, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    invoke FileOpenRead, pszSrc
     .IF eax == INVALID_HANDLE_VALUE
         xor eax, eax
         ret
@@ -1806,18 +1812,41 @@ Lz4Block ENDP
 ; runs and matches carry a 2-bit state of trailing literals that disambiguates
 ; the 0..15 opcodes; the stream ends on the 16..31 opcode with distance 16384.
 ; ---------------------------------------------------------------------------
+.data
+g_lzoUsed       dd 0                    ; input bytes consumed by the current LZO block
+
+.code
+
+; base plus the 255-run extension encoding, counting consumed bytes
+LzoExt PROC base:DWORD
+    mov eax, base
+    .WHILE g_zfErr == 0
+        push eax
+        invoke ZfInByte
+        inc g_lzoUsed
+        mov ecx, eax
+        pop eax
+        .IF ecx == 0
+            add eax, 255
+        .ELSE
+            add eax, ecx
+            .BREAK
+        .ENDIF
+    .ENDW
+    ret
+LzoExt ENDP
+
 LzoBlock PROC USES esi edi ebx inLen:DWORD
-    LOCAL consumed:DWORD
-    LOCAL lstate:DWORD
+        LOCAL lstate:DWORD
     LOCAL tv:DWORD
     LOCAL mlen:DWORD
     LOCAL dist:DWORD
     LOCAL haveOp:DWORD
-    mov consumed, 0
+    mov g_lzoUsed, 0
     mov lstate, 0
     mov haveOp, 0
     invoke ZfInByte
-    inc consumed
+    inc g_lzoUsed
     .IF eax > 17
         sub eax, 17
         mov ebx, eax                        ; leading literal run
@@ -1826,7 +1855,7 @@ LzoBlock PROC USES esi edi ebx inLen:DWORD
         .ELSE
             mov lstate, 4
         .ENDIF
-        add consumed, ebx
+        add g_lzoUsed, ebx
         .WHILE ebx != 0 && g_zfErr == 0
             invoke ZfInByte
             invoke ZfPutB, eax
@@ -1840,14 +1869,14 @@ LzoBlock PROC USES esi edi ebx inLen:DWORD
         mov haveOp, 1
     .ENDIF
     .WHILE g_zfErr == 0
-        mov eax, consumed
+        mov eax, g_lzoUsed
         .IF eax > inLen
             mov g_zfErr, 1                  ; ran past the block with no end marker
             .BREAK
         .ENDIF
         .IF haveOp == 0
             invoke ZfInByte
-            inc consumed
+            inc g_lzoUsed
             mov tv, eax
         .ENDIF
         mov haveOp, 0
@@ -1864,7 +1893,7 @@ LzoBlock PROC USES esi edi ebx inLen:DWORD
             and ecx, 7
             mov ebx, ecx
             invoke ZfInByte
-            inc consumed
+            inc g_lzoUsed
             shl eax, 3
             add eax, ebx
             inc eax
@@ -1881,7 +1910,7 @@ LzoBlock PROC USES esi edi ebx inLen:DWORD
             and ecx, 7
             mov ebx, ecx
             invoke ZfInByte
-            inc consumed
+            inc g_lzoUsed
             shl eax, 3
             add eax, ebx
             inc eax
@@ -1890,28 +1919,15 @@ LzoBlock PROC USES esi edi ebx inLen:DWORD
             ; 0 0 1 L L L L L: within 16 kB, LE16 distance+state
             and eax, 31
             .IF eax == 0
-                mov eax, 31
-                .WHILE g_zfErr == 0
-                    push eax
-                    invoke ZfInByte
-                    inc consumed
-                    mov ecx, eax
-                    pop eax
-                    .IF ecx == 0
-                        add eax, 255
-                    .ELSE
-                        add eax, ecx
-                        .BREAK
-                    .ENDIF
-                .ENDW
+                invoke LzoExt, 31
             .ENDIF
             add eax, 2
             mov mlen, eax
             invoke ZfInByte
-            inc consumed
+            inc g_lzoUsed
             mov ebx, eax
             invoke ZfInByte
-            inc consumed
+            inc g_lzoUsed
             shl eax, 8
             or ebx, eax                     ; LE16: D D D D D D D D | D D D D D D S S
             mov eax, ebx
@@ -1926,20 +1942,7 @@ LzoBlock PROC USES esi edi ebx inLen:DWORD
             mov ebx, eax
             and eax, 7
             .IF eax == 0
-                mov eax, 7
-                .WHILE g_zfErr == 0
-                    push eax
-                    invoke ZfInByte
-                    inc consumed
-                    mov ecx, eax
-                    pop eax
-                    .IF ecx == 0
-                        add eax, 255
-                    .ELSE
-                        add eax, ecx
-                        .BREAK
-                    .ENDIF
-                .ENDW
+                invoke LzoExt, 7
             .ENDIF
             add eax, 2
             mov mlen, eax
@@ -1948,10 +1951,10 @@ LzoBlock PROC USES esi edi ebx inLen:DWORD
             shl eax, 11                     ; H << 14
             mov ebx, eax
             invoke ZfInByte
-            inc consumed
+            inc g_lzoUsed
             push eax
             invoke ZfInByte
-            inc consumed
+            inc g_lzoUsed
             mov ecx, eax
             pop eax
             shl ecx, 8
@@ -1972,24 +1975,11 @@ LzoBlock PROC USES esi edi ebx inLen:DWORD
             .IF lstate == 0
                 ; long literal run
                 .IF eax == 0
-                    mov eax, 15
-                    .WHILE g_zfErr == 0
-                        push eax
-                        invoke ZfInByte
-                        inc consumed
-                        mov ecx, eax
-                        pop eax
-                        .IF ecx == 0
-                            add eax, 255
-                        .ELSE
-                            add eax, ecx
-                            .BREAK
-                        .ENDIF
-                    .ENDW
+                    invoke LzoExt, 15
                 .ENDIF
                 add eax, 3
                 mov ebx, eax
-                add consumed, eax
+                add g_lzoUsed, eax
                 .WHILE ebx != 0 && g_zfErr == 0
                     invoke ZfInByte
                     invoke ZfPutB, eax
@@ -2008,7 +1998,7 @@ LzoBlock PROC USES esi edi ebx inLen:DWORD
                 and ecx, 3
                 mov lstate, ecx
                 invoke ZfInByte
-                inc consumed
+                inc g_lzoUsed
                 shl eax, 2
                 add eax, ebx
                 add eax, 2049
@@ -2024,7 +2014,7 @@ LzoBlock PROC USES esi edi ebx inLen:DWORD
                 and ecx, 3
                 mov lstate, ecx
                 invoke ZfInByte
-                inc consumed
+                inc g_lzoUsed
                 shl eax, 2
                 add eax, ebx
                 inc eax
@@ -2055,7 +2045,7 @@ LzoBlock PROC USES esi edi ebx inLen:DWORD
         .ENDW
         ; trailing literals for the next opcode
         mov ebx, lstate
-        add consumed, ebx
+        add g_lzoUsed, ebx
         .WHILE ebx != 0 && g_zfErr == 0
             invoke ZfInByte
             invoke ZfPutB, eax
@@ -2097,7 +2087,7 @@ GczExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
     mov ok, FALSE
     mov hOut, INVALID_HANDLE_VALUE
     mov pIdx, 0
-    invoke CreateFileW, pszSrc, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    invoke FileOpenRead, pszSrc
     .IF eax == INVALID_HANDLE_VALUE
         xor eax, eax
         ret
@@ -2188,17 +2178,8 @@ GczExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
         inc i
     .ENDW
     invoke ZfOutFinal
-    .IF g_zfErr == 0
-        mov eax, g_zfTotHi
-        .IF eax > totHi
-            mov ok, TRUE
-        .ELSEIF eax == totHi
-            mov eax, g_zfTotLo
-            .IF eax >= totLo
-                mov ok, TRUE
-            .ENDIF
-        .ENDIF
-    .ENDIF
+    invoke ZfCheckTotal, totLo, totHi
+    mov ok, eax
     invoke ZfExpandFree
 done:
     invoke VfsFreeMem, pIdx
@@ -2234,7 +2215,7 @@ DaxExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
     mov hOut, INVALID_HANDLE_VALUE
     mov pOffs, 0
     mov pNc, 0
-    invoke CreateFileW, pszSrc, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    invoke FileOpenRead, pszSrc
     .IF eax == INVALID_HANDLE_VALUE
         xor eax, eax
         ret
@@ -2336,12 +2317,8 @@ DaxExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
         inc i
     .ENDW
     invoke ZfOutFinal
-    .IF g_zfErr == 0 && g_zfTotHi == 0
-        mov eax, g_zfTotLo
-        .IF eax >= totCb
-            mov ok, TRUE
-        .ENDIF
-    .ENDIF
+    invoke ZfCheckTotal, totCb, 0
+    mov ok, eax
     invoke ZfExpandFree
 done:
     invoke VfsFreeMem, pOffs
@@ -2378,7 +2355,7 @@ JsoExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
     mov ok, FALSE
     mov hOut, INVALID_HANDLE_VALUE
     mov pIdx, 0
-    invoke CreateFileW, pszSrc, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    invoke FileOpenRead, pszSrc
     .IF eax == INVALID_HANDLE_VALUE
         xor eax, eax
         ret
@@ -2464,12 +2441,8 @@ JsoExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
         inc i
     .ENDW
     invoke ZfOutFinal
-    .IF g_zfErr == 0 && g_zfTotHi == 0
-        mov eax, g_zfTotLo
-        .IF eax >= totCb
-            mov ok, TRUE
-        .ENDIF
-    .ENDIF
+    invoke ZfCheckTotal, totCb, 0
+    mov ok, eax
     invoke ZfExpandFree
 done:
     invoke VfsFreeMem, pIdx
@@ -2510,7 +2483,7 @@ IszExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
     mov ok, FALSE
     mov hOut, INVALID_HANDLE_VALUE
     mov pIdx, 0
-    invoke CreateFileW, pszSrc, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    invoke FileOpenRead, pszSrc
     .IF eax == INVALID_HANDLE_VALUE
         xor eax, eax
         ret
@@ -2641,17 +2614,8 @@ IszExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
     .ENDW
 finish:
     invoke ZfOutFinal
-    .IF g_zfErr == 0
-        mov eax, g_zfTotHi
-        .IF eax > totHi
-            mov ok, TRUE
-        .ELSEIF eax == totHi
-            mov eax, g_zfTotLo
-            .IF eax >= totLo
-                mov ok, TRUE
-            .ENDIF
-        .ENDIF
-    .ENDIF
+    invoke ZfCheckTotal, totLo, totHi
+    mov ok, eax
     invoke ZfExpandFree
 done:
     invoke VfsFreeMem, pIdx
@@ -2685,7 +2649,7 @@ DaaExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
     mov ok, FALSE
     mov hOut, INVALID_HANDLE_VALUE
     mov pIdx, 0
-    invoke CreateFileW, pszSrc, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    invoke FileOpenRead, pszSrc
     .IF eax == INVALID_HANDLE_VALUE
         xor eax, eax
         ret
@@ -2766,17 +2730,8 @@ DaaExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
         inc i
     .ENDW
     invoke ZfOutFinal
-    .IF g_zfErr == 0
-        mov eax, g_zfTotHi
-        .IF eax > totHi
-            mov ok, TRUE
-        .ELSEIF eax == totHi
-            mov eax, g_zfTotLo
-            .IF eax >= totLo
-                mov ok, TRUE
-            .ENDIF
-        .ENDIF
-    .ENDIF
+    invoke ZfCheckTotal, totLo, totHi
+    mov ok, eax
     invoke ZfExpandFree
 done:
     invoke VfsFreeMem, pIdx
@@ -3776,7 +3731,7 @@ ChdExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
     mov haveLzma, 0
     mov haveFlac, 0
     mov isCd, 0
-    invoke CreateFileW, pszSrc, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    invoke FileOpenRead, pszSrc
     .IF eax == INVALID_HANDLE_VALUE
         xor eax, eax
         ret
@@ -4226,17 +4181,8 @@ ChdExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
         inc i
     .ENDW
     invoke ZfOutFinal
-    .IF g_zfErr == 0
-        mov eax, g_zfTotHi
-        .IF eax > totHi
-            mov ok, TRUE
-        .ELSEIF eax == totHi
-            mov eax, g_zfTotLo
-            .IF eax >= totLo
-                mov ok, TRUE
-            .ENDIF
-        .ENDIF
-    .ENDIF
+    invoke ZfCheckTotal, totLo, totHi
+    mov ok, eax
     invoke ZfExpandFree
 done:
     .IF haveLzma != 0
@@ -4899,7 +4845,7 @@ UifExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
     mov ok, FALSE
     mov hOut, INVALID_HANDLE_VALUE
     mov pTbl, 0
-    invoke CreateFileW, pszSrc, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    invoke FileOpenRead, pszSrc
     .IF eax == INVALID_HANDLE_VALUE
         xor eax, eax
         ret
@@ -5026,17 +4972,8 @@ UifExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
         inc i
     .ENDW
     invoke ZfOutFinal
-    .IF g_zfErr == 0
-        mov eax, g_zfTotHi
-        .IF eax > totHi
-            mov ok, TRUE
-        .ELSEIF eax == totHi
-            mov eax, g_zfTotLo
-            .IF eax >= totLo
-                mov ok, TRUE
-            .ENDIF
-        .ENDIF
-    .ENDIF
+    invoke ZfCheckTotal, totLo, totHi
+    mov ok, eax
     invoke ZfExpandFree
 done:
     invoke VfsFreeMem, pTbl
@@ -5137,7 +5074,7 @@ DmgExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
     mov pXml, 0
     mov pMish, 0
     mov produced, 0
-    invoke CreateFileW, pszSrc, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    invoke FileOpenRead, pszSrc
     .IF eax == INVALID_HANDLE_VALUE
         xor eax, eax
         ret

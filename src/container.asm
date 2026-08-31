@@ -78,7 +78,7 @@ CtDataOffset ENDP
 ; Open the data file, derive the data offset for secSize, record the geometry. Returns TRUE on success.
 CtFinish PROC pszData:DWORD, baseLo:DWORD, baseHi:DWORD, secSize:DWORD, lbaBase:DWORD, pszName:DWORD
     LOCAL hFile:DWORD
-    invoke CreateFileW, pszData, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    invoke FileOpenRead, pszData
     .IF eax == INVALID_HANDLE_VALUE
         xor eax, eax
         ret
@@ -285,7 +285,7 @@ CtCueTracks PROC USES esi edi ebx pText:DWORD, cb:DWORD, pszData:DWORD
     .IF anyAudio == 0 || nTrk == 0
         ret
     .ENDIF
-    invoke CreateFileW, pszData, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    invoke FileOpenRead, pszData
     .IF eax == INVALID_HANDLE_VALUE
         ret
     .ENDIF
@@ -352,7 +352,7 @@ CtOpenNrg PROC USES esi edi ebx pszPath:DWORD
     LOCAL ok:DWORD
 
     mov ok, FALSE
-    invoke CreateFileW, pszPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    invoke FileOpenRead, pszPath
     .IF eax == INVALID_HANDLE_VALUE
         ret
     .ENDIF
@@ -510,7 +510,7 @@ CtOpenMds PROC USES esi edi ebx pszPath:DWORD
     LOCAL szMdf[MAX_PATH]:WORD
 
     mov ok, FALSE
-    invoke CreateFileW, pszPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    invoke FileOpenRead, pszPath
     .IF eax == INVALID_HANDLE_VALUE
         ret
     .ENDIF
@@ -712,7 +712,7 @@ CtScan PROC USES esi edi ebx pszPath:DWORD
     LOCAL secOff:DWORD
 
     mov ok, FALSE
-    invoke CreateFileW, pszPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    invoke FileOpenRead, pszPath
     .IF eax == INVALID_HANDLE_VALUE
         ret
     .ENDIF
@@ -960,7 +960,7 @@ CtOpenEcm PROC USES esi edi ebx pszPath:DWORD
     LOCAL nRead:DWORD
 
     mov ok, FALSE
-    invoke CreateFileW, pszPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    invoke FileOpenRead, pszPath
     .IF eax == INVALID_HANDLE_VALUE
         ret
     .ENDIF
@@ -1341,7 +1341,7 @@ CtOpenMdx PROC USES esi edi ebx pszPath:DWORD
     LOCAL ok:DWORD
 
     mov ok, FALSE
-    invoke CreateFileW, pszPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    invoke FileOpenRead, pszPath
     .IF eax == INVALID_HANDLE_VALUE
         ret
     .ENDIF
@@ -1435,7 +1435,7 @@ CtOpenC2d PROC USES esi edi ebx pszPath:DWORD
 
     mov ok, FALSE
     mov pTrk, 0
-    invoke CreateFileW, pszPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    invoke FileOpenRead, pszPath
     .IF eax == INVALID_HANDLE_VALUE
         ret
     .ENDIF

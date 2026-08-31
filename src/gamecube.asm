@@ -19,12 +19,6 @@ WSTR szGcRoot, <GAMECUBE>
 
 .code
 
-GcBswap PROC val:DWORD
-    mov eax, val
-    bswap eax
-    ret
-GcBswap ENDP
-
 GcDetect PROC
     invoke IsoSectorPtr, 0
     .IF eax == 0
@@ -37,11 +31,11 @@ GcDetect PROC
         ret
     .ENDIF
     push ecx
-    invoke GcBswap, dword ptr [ecx + 424h]
+    invoke BSwap32, dword ptr [ecx + 424h]
     pop ecx
     mov g_gcFstOff, eax
     push ecx
-    invoke GcBswap, dword ptr [ecx + 428h]
+    invoke BSwap32, dword ptr [ecx + 428h]
     pop ecx
     mov g_gcFstSize, eax
     .IF g_gcFstOff == 0 || eax < 12 || eax > GC_FST_MAX
@@ -118,7 +112,7 @@ GcBuild PROC USES esi edi ebx pRoot:DWORD
         jmp fail
     .ENDIF
     mov ecx, pFst
-    invoke GcBswap, dword ptr [ecx + 8]
+    invoke BSwap32, dword ptr [ecx + 8]
     mov nEnt, eax
     .IF eax < 1 || eax > 100000h
         jmp fail
@@ -174,9 +168,9 @@ GcBuild PROC USES esi edi ebx pRoot:DWORD
         .IF eax >= cbStr
             jmp fail
         .ENDIF
-        invoke GcBswap, dword ptr [esi + 4]
+        invoke BSwap32, dword ptr [esi + 4]
         mov fileOff, eax
-        invoke GcBswap, dword ptr [esi + 8]
+        invoke BSwap32, dword ptr [esi + 8]
         mov fileLen, eax
         mov eax, pStr
         add eax, nameOff

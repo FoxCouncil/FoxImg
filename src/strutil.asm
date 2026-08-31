@@ -190,6 +190,12 @@ ParseName ENDP
 ; Files
 ; ---------------------------------------------------------------------------
 ; Read cb bytes at 64-bit offset into pDst. Returns bytes read.
+; The open-for-shared-read every reader performs
+FileOpenRead PROC pszPath:DWORD
+    invoke CreateFileW, pszPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    ret
+FileOpenRead ENDP
+
 FileReadAt PROC hFile:DWORD, offLo:DWORD, offHi:DWORD, pDst:DWORD, cb:DWORD
     LOCAL nRead:DWORD
     invoke SetFilePointerEx, hFile, offLo, offHi, NULL, FILE_BEGIN
@@ -223,7 +229,7 @@ ReadTextFile PROC pszPath:DWORD, pcb:DWORD
     LOCAL pBuf:DWORD
     mov eax, pcb
     mov dword ptr [eax], 0
-    invoke CreateFileW, pszPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    invoke FileOpenRead, pszPath
     .IF eax == INVALID_HANDLE_VALUE
         xor eax, eax
         ret
