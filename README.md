@@ -49,7 +49,7 @@ The program is one small executable with no runtime dependencies.
 | DAX | .dax | Yes | No | PSP: zlib frames and raw NC areas |
 | JSO | .jso | Yes | No | PSP: deflate and LZO methods |
 | PBP | .pbp | Planned | No | PSP EBOOT with the ISO inside DATA.PSAR |
-| CHD | .chd | Planned | No | MAME: zlib / LZMA / FLAC hunks |
+| CHD | .chd | Yes | No | v5 with zlib / LZMA / stored / self hunks; FLAC, CD codecs and parents declined |
 | GCZ | .gcz | Yes | No | Dolphin: zlib blocks, stored blocks |
 | WIA / RVZ | .wia .rvz | Planned | No | Dolphin: zstd / bzip2 / LZMA |
 | WBFS | .wbfs | Planned | No | Wii backup file system |
@@ -76,9 +76,9 @@ and then open like any other image, the same way ECM does.
 
 | Codec | Status | Used by |
 | --- | --- | --- |
-| DEFLATE (inflate) | Yes | .gz, .zip, .cso, .gcz, .dax, .jso, .isz (raw and zlib framing, auto-detected); later PBP, CHD |
+| DEFLATE (inflate) | Yes | .gz, .zip, .cso, .gcz, .dax, .jso, .isz (raw and zlib framing, auto-detected); later PBP |
 | DEFLATE (compress) | Yes | Save As gzip ISO (fixed Huffman, 32 KB window) |
-| LZMA | Planned | DAA v0x110, CHD, RVZ |
+| LZMA | Yes | CHD hunks; DAA v0x110 and RVZ later |
 | bzip2 | Planned | ISZ, RVZ |
 | zstd | Planned | RVZ |
 | LZ4 | Yes | ZSO, CISO v2 |

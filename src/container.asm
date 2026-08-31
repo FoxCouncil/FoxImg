@@ -956,6 +956,8 @@ WSTR szCtZso, <ZSO>
 WSTR szCtJso, <JSO>
 WSTR szCtIsz, <ISZ>
 WSTR szCtDaa, <DAA>
+WSTR szCtChd, <CHD>
+WSTR szExtChd, <.chd>
 WSTR szExtGcz, <.gcz>
 WSTR szExtDax, <.dax>
 WSTR szExtZso, <.zso>
@@ -1063,6 +1065,17 @@ CtOpenDaa PROC pszPath:DWORD
     invoke CtFinish, addr szOut, 0, 0, 0, 0, offset szCtDaa
     ret
 CtOpenDaa ENDP
+
+CtOpenChd PROC pszPath:DWORD
+    LOCAL szOut[MAX_PATH]:WORD
+    invoke CtTempOut, addr szOut, pszPath
+    invoke ChdExpandFile, pszPath, addr szOut
+    .IF eax == 0
+        ret
+    .ENDIF
+    invoke CtFinish, addr szOut, 0, 0, 0, 0, offset szCtChd
+    ret
+CtOpenChd ENDP
 
 ; ---------------------------------------------------------------------------
 ; BlindWrite 5/6 (.b5t/.b6t): "BWT5 STREAM SIGN" descriptor beside a .b5i/.b6i
@@ -1573,6 +1586,11 @@ CtResolve PROC pszPath:DWORD
     invoke HasExt, pszPath, offset szExtMdx
     .IF eax != 0
         invoke CtOpenMdx, pszPath
+        ret
+    .ENDIF
+    invoke HasExt, pszPath, offset szExtChd
+    .IF eax != 0
+        invoke CtOpenChd, pszPath
         ret
     .ENDIF
     xor eax, eax

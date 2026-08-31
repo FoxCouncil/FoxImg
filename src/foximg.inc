@@ -630,6 +630,7 @@ INVALID_FILE_ATTRIBUTES equ 0FFFFFFFFh
 GENERIC_WRITE           equ 40000000h
 CREATE_ALWAYS           equ 2
 FILE_BEGIN              equ 0
+FILE_END                equ 2
 DI_NORMAL               equ 0003h
 CP_ACP                  equ 0
 CP_UTF8                 equ 65001
@@ -1125,12 +1126,14 @@ DaxExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, PSP DAX
 JsoExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, PSP JSO (deflate method)
 IszExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, UltraISO ISZ (zlib chunks)
 DaaExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, PowerISO DAA v0x100
+ChdExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, MAME CHD v5 (zlib/lzma hunks)
 GzCompressFile      PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL; worker progress + Cancel
 EXTERNDEF g_saveGzip:DWORD                      ; save target ends in .gz: worker gzips the image
 
 ; ---------------------------------------------------------------------------
 ; Optical containers (container.asm): NRG, MDS/MDF, CCD/IMG, GDI, TOC, generic scan
 ; ---------------------------------------------------------------------------
+BSwap32             PROTO :DWORD                ; big-endian dword swap (container.asm)
 CtResolve           PROTO :DWORD                ; pszPath -> TRUE when recognised (geometry + g_szBinPath set)
 CtResolveByScan     PROTO :DWORD                ; pszPath -> TRUE when an ISO 9660 descriptor was found inside
 CtReset             PROTO

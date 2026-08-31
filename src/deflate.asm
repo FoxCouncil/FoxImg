@@ -9,7 +9,7 @@ include foximg.inc
 
 ZF_INBUF        equ 1024 * 1024
 ZF_OUTBUF       equ 1024 * 1024         ; flush threshold; the buffer is larger by keep + overshoot
-ZF_KEEP         equ 32768               ; window bytes kept across flushes
+ZF_KEEP         equ 131072              ; window bytes kept across flushes (LZMA hunks reach past 32 KB)
 ZF_OUTALLOC     equ ZF_OUTBUF + ZF_KEEP + 512
 
 .data
@@ -2810,5 +2810,1130 @@ done:
     mov eax, ok
     ret
 DaaExpandFile ENDP
+
+
+; ---------------------------------------------------------------------------
+; LZMA1 decoder (raw streams: CHD hunks, DAA v0x110 chunks). One probability
+; array laid out as in LzmaDec, adaptive bits through a binary range coder.
+; Streams read from the shared input, bytes land in the shared output window,
+; so back references use the same 128 KB retained buffer as everything else.
+; ---------------------------------------------------------------------------
+LZ_ISMATCH      equ 0                   ; [state][posState], 12 * 16
+LZ_ISREP        equ 192
+LZ_ISREPG0      equ 204
+LZ_ISREPG1      equ 216
+LZ_ISREPG2      equ 228
+LZ_ISREP0L      equ 240                 ; [state][posState]
+LZ_POSSLOT      equ 432                 ; 4 categories * 64
+LZ_SPECPOS      equ 688
+LZ_ALIGN        equ 803
+LZ_LEN          equ 819                 ; choice, choice2, low 16*8, mid 16*8, high 256
+LZ_REPLEN       equ 1333
+LZ_LIT          equ 1847
+LZ_FIXED        equ 1847
+
+.data
+g_lzProbs       dd 0
+g_lzNumProbs    dd 0
+g_lzRange       dd 0
+g_lzCode        dd 0
+g_lzState       dd 0
+g_lzRep0        dd 0
+g_lzRep1        dd 0
+g_lzRep2        dd 0
+g_lzRep3        dd 0
+g_lzLc          dd 0
+g_lzLpMask      dd 0
+g_lzPbMask      dd 0
+g_lzPos         dd 0                    ; bytes produced in the current stream
+
+.code
+
+; Probability array for the given literal-context parameters
+LzmaAlloc PROC lc:DWORD, lp:DWORD, pb:DWORD
+    mov eax, lc
+    mov g_lzLc, eax
+    mov ecx, lp
+    mov eax, 1
+    shl eax, cl
+    dec eax
+    mov g_lzLpMask, eax
+    mov ecx, pb
+    mov eax, 1
+    shl eax, cl
+    dec eax
+    mov g_lzPbMask, eax
+    mov ecx, lc
+    add ecx, lp
+    .IF ecx > 8
+        xor eax, eax
+        ret
+    .ENDIF
+    mov eax, 300h
+    shl eax, cl
+    add eax, LZ_FIXED
+    mov g_lzNumProbs, eax
+    shl eax, 1
+    invoke VfsAlloc, eax
+    mov g_lzProbs, eax
+    .IF eax == 0
+        xor eax, eax
+        ret
+    .ENDIF
+    mov eax, TRUE
+    ret
+LzmaAlloc ENDP
+
+LzmaFree PROC
+    invoke VfsFreeMem, g_lzProbs
+    mov g_lzProbs, 0
+    ret
+LzmaFree ENDP
+
+; Reset probabilities and prime the range coder for a fresh stream
+LzmaStart PROC USES edi
+    mov edi, g_lzProbs
+    mov eax, 1024
+    mov ecx, g_lzNumProbs
+    rep stosw
+    mov g_lzState, 0
+    mov g_lzRep0, 0
+    mov g_lzRep1, 0
+    mov g_lzRep2, 0
+    mov g_lzRep3, 0
+    mov g_lzPos, 0
+    mov g_lzRange, 0FFFFFFFFh
+    invoke ZfInByte                     ; leading zero byte
+    xor ecx, ecx
+    push ecx
+    invoke ZfInByte
+    pop ecx
+    shl ecx, 8
+    or ecx, eax
+    push ecx
+    invoke ZfInByte
+    pop ecx
+    shl ecx, 8
+    or ecx, eax
+    push ecx
+    invoke ZfInByte
+    pop ecx
+    shl ecx, 8
+    or ecx, eax
+    push ecx
+    invoke ZfInByte
+    pop ecx
+    shl ecx, 8
+    or ecx, eax
+    mov g_lzCode, ecx
+    ret
+LzmaStart ENDP
+
+; One adaptive bit; probability word at index idx
+LzBit PROC idx:DWORD
+    mov ecx, g_lzProbs
+    mov edx, idx
+    movzx eax, word ptr [ecx + edx * 2]
+    mov ecx, g_lzRange
+    shr ecx, 11
+    imul ecx, eax                       ; bound
+    .IF g_lzCode < ecx
+        mov g_lzRange, ecx
+        mov ecx, 2048
+        sub ecx, eax
+        shr ecx, 5
+        add eax, ecx
+        mov ecx, g_lzProbs
+        mov edx, idx
+        mov word ptr [ecx + edx * 2], ax
+        xor eax, eax
+    .ELSE
+        sub g_lzRange, ecx
+        sub g_lzCode, ecx
+        mov ecx, eax
+        shr ecx, 5
+        sub eax, ecx
+        mov ecx, g_lzProbs
+        mov edx, idx
+        mov word ptr [ecx + edx * 2], ax
+        mov eax, 1
+    .ENDIF
+    .IF g_lzRange < 1000000h
+        shl g_lzRange, 8
+        push eax
+        invoke ZfInByte
+        mov ecx, g_lzCode
+        shl ecx, 8
+        or ecx, eax
+        mov g_lzCode, ecx
+        pop eax
+    .ENDIF
+    ret
+LzBit ENDP
+
+; Forward bit tree of n bits at base; returns the symbol
+LzTree PROC USES ebx pbase:DWORD, n:DWORD
+    LOCAL m:DWORD
+    mov m, 1
+    mov ebx, n
+    .WHILE ebx != 0
+        mov eax, pbase
+        add eax, m
+        invoke LzBit, eax
+        mov ecx, m
+        lea ecx, [ecx * 2 + eax]
+        mov m, ecx
+        dec ebx
+    .ENDW
+    mov ecx, n
+    mov eax, 1
+    shl eax, cl
+    mov ecx, m
+    sub ecx, eax
+    mov eax, ecx
+    ret
+LzTree ENDP
+
+; Reverse bit tree of n bits at base
+LzTreeRev PROC USES ebx esi pbase:DWORD, n:DWORD
+    LOCAL m:DWORD
+    LOCAL sym:DWORD
+    mov m, 1
+    mov sym, 0
+    xor esi, esi                        ; bit position
+    mov ebx, n
+    .WHILE ebx != 0
+        mov eax, pbase
+        add eax, m
+        invoke LzBit, eax
+        mov ecx, m
+        lea ecx, [ecx * 2 + eax]
+        mov m, ecx
+        mov ecx, esi
+        shl eax, cl
+        or sym, eax
+        inc esi
+        dec ebx
+    .ENDW
+    mov eax, sym
+    ret
+LzTreeRev ENDP
+
+; n bits at probability one half
+LzDirect PROC USES ebx esi n:DWORD
+    xor esi, esi                        ; result
+    mov ebx, n
+    .WHILE ebx != 0
+        shr g_lzRange, 1
+        mov eax, g_lzCode
+        sub eax, g_lzRange
+        mov g_lzCode, eax
+        mov ecx, eax
+        sar ecx, 31                     ; all ones when the subtraction went negative
+        mov eax, g_lzRange
+        and eax, ecx
+        add g_lzCode, eax
+        lea esi, [esi * 2 + ecx + 1]
+        .IF g_lzRange < 1000000h
+            shl g_lzRange, 8
+            invoke ZfInByte
+            mov ecx, g_lzCode
+            shl ecx, 8
+            or ecx, eax
+            mov g_lzCode, ecx
+        .ENDIF
+        dec ebx
+    .ENDW
+    mov eax, esi
+    ret
+LzDirect ENDP
+
+; Length decoder at base (LZ_LEN or LZ_REPLEN); returns the 0-based symbol 0..271
+LzLenDec PROC pbase:DWORD, posState:DWORD
+    LOCAL b:DWORD
+    invoke LzBit, pbase
+    .IF eax == 0
+        mov eax, posState
+        shl eax, 3
+        add eax, pbase
+        add eax, 2
+        invoke LzTree, eax, 3
+        ret
+    .ENDIF
+    mov eax, pbase
+    inc eax
+    invoke LzBit, eax
+    .IF eax == 0
+        mov eax, posState
+        shl eax, 3
+        add eax, pbase
+        add eax, 2 + 128
+        invoke LzTree, eax, 3
+        add eax, 8
+        ret
+    .ENDIF
+    mov eax, pbase
+    add eax, 2 + 256
+    invoke LzTree, eax, 8
+    add eax, 16
+    ret
+LzLenDec ENDP
+
+; Byte at back distance dist (0 = the previous byte); assumes the caller checked bounds
+LzWinByte PROC dist:DWORD
+    mov ecx, g_zfOut
+    mov edx, g_zfOutPos
+    sub edx, dist
+    dec edx
+    movzx eax, byte ptr [ecx + edx]
+    ret
+LzWinByte ENDP
+
+; Decode outCb bytes of one raw LZMA stream from the current input position
+LzmaDecode PROC USES esi edi ebx outCb:DWORD
+    LOCAL posState:DWORD
+    LOCAL sym:DWORD
+    LOCAL mlen:DWORD
+    LOCAL mdist:DWORD
+    LOCAL litIdx:DWORD
+    LOCAL matchByte:DWORD
+    LOCAL offs:DWORD
+    LOCAL mbit:DWORD
+    LOCAL slot:DWORD
+    LOCAL nd:DWORD
+
+    .WHILE g_zfErr == 0
+        mov eax, g_lzPos
+        .BREAK .IF eax >= outCb
+        and eax, g_lzPbMask
+        mov posState, eax
+        mov eax, g_lzState
+        shl eax, 4
+        add eax, posState
+        invoke LzBit, eax               ; IsMatch
+        .IF eax == 0
+            ; ---- literal ----
+            mov eax, g_lzPos
+            and eax, g_lzLpMask
+            mov ecx, g_lzLc
+            shl eax, cl
+            xor edx, edx
+            .IF g_lzPos != 0
+                push eax
+                invoke LzWinByte, 0
+                mov edx, eax
+                pop eax
+            .ENDIF
+            mov ecx, 8
+            sub ecx, g_lzLc
+            shr edx, cl
+            add eax, edx
+            mov ecx, eax
+            shl ecx, 8
+            lea ecx, [ecx + ecx * 2]    ; context * 0x300
+            add ecx, LZ_LIT
+            mov litIdx, ecx
+            mov sym, 1
+            .IF g_lzState < 7
+                .WHILE sym < 100h && g_zfErr == 0
+                    mov eax, litIdx
+                    add eax, sym
+                    invoke LzBit, eax
+                    mov ecx, sym
+                    lea ecx, [ecx * 2 + eax]
+                    mov sym, ecx
+                .ENDW
+            .ELSE
+                mov eax, g_lzRep0
+                .IF eax >= g_lzPos
+                    mov g_zfErr, 1
+                    .BREAK
+                .ENDIF
+                invoke LzWinByte, g_lzRep0
+                mov matchByte, eax
+                mov offs, 100h
+                .WHILE sym < 100h && g_zfErr == 0
+                    shl matchByte, 1
+                    mov eax, matchByte
+                    and eax, offs
+                    mov mbit, eax
+                    mov ecx, litIdx
+                    add ecx, offs
+                    add ecx, eax
+                    add ecx, sym
+                    invoke LzBit, ecx
+                    mov ecx, sym
+                    lea ecx, [ecx * 2 + eax]
+                    mov sym, ecx
+                    .IF eax == 0
+                        mov ecx, mbit
+                        not ecx
+                        and offs, ecx
+                    .ELSE
+                        mov ecx, mbit
+                        and offs, ecx
+                    .ENDIF
+                .ENDW
+            .ENDIF
+            mov eax, sym
+            and eax, 0FFh
+            invoke ZfPutB, eax
+            inc g_lzPos
+            mov eax, g_lzState
+            .IF eax < 4
+                mov g_lzState, 0
+            .ELSEIF eax < 10
+                sub eax, 3
+                mov g_lzState, eax
+            .ELSE
+                sub eax, 6
+                mov g_lzState, eax
+            .ENDIF
+            .CONTINUE
+        .ENDIF
+        ; ---- match family ----
+        mov eax, g_lzState
+        add eax, LZ_ISREP
+        invoke LzBit, eax
+        .IF eax == 0
+            ; new match: length, then distance
+            invoke LzLenDec, LZ_LEN, posState
+            mov mlen, eax
+            .IF eax > 3
+                mov eax, 3
+            .ENDIF
+            shl eax, 6
+            add eax, LZ_POSSLOT
+            invoke LzTree, eax, 6
+            mov slot, eax
+            .IF eax < 4
+                mov mdist, eax
+            .ELSE
+                mov ecx, eax
+                shr ecx, 1
+                dec ecx
+                mov nd, ecx
+                mov eax, slot
+                and eax, 1
+                or eax, 2
+                shl eax, cl
+                mov mdist, eax
+                .IF slot < 14
+                    mov eax, mdist
+                    sub eax, slot
+                    dec eax
+                    add eax, LZ_SPECPOS
+                    invoke LzTreeRev, eax, nd
+                    add mdist, eax
+                .ELSE
+                    mov eax, nd
+                    sub eax, 4
+                    invoke LzDirect, eax
+                    shl eax, 4
+                    add mdist, eax
+                    invoke LzTreeRev, LZ_ALIGN, 4
+                    add mdist, eax
+                .ENDIF
+            .ENDIF
+            .IF mdist == 0FFFFFFFFh
+                .BREAK                  ; end marker
+            .ENDIF
+            mov eax, g_lzRep2
+            mov g_lzRep3, eax
+            mov eax, g_lzRep1
+            mov g_lzRep2, eax
+            mov eax, g_lzRep0
+            mov g_lzRep1, eax
+            mov eax, mdist
+            mov g_lzRep0, eax
+            mov eax, 10
+            .IF g_lzState < 7
+                mov eax, 7
+            .ENDIF
+            mov g_lzState, eax
+            mov eax, mlen
+            add eax, 2
+            mov mlen, eax
+        .ELSE
+            ; repeated distances
+            mov eax, g_lzState
+            add eax, LZ_ISREPG0
+            invoke LzBit, eax
+            .IF eax == 0
+                mov eax, g_lzState
+                shl eax, 4
+                add eax, posState
+                add eax, LZ_ISREP0L
+                invoke LzBit, eax
+                .IF eax == 0
+                    ; short rep: one byte from rep0
+                    mov eax, g_lzRep0
+                    .IF eax >= g_lzPos
+                        mov g_zfErr, 1
+                        .BREAK
+                    .ENDIF
+                    invoke LzWinByte, g_lzRep0
+                    invoke ZfPutB, eax
+                    inc g_lzPos
+                    mov eax, 9
+                    .IF g_lzState >= 7
+                        mov eax, 11
+                    .ENDIF
+                    mov g_lzState, eax
+                    .CONTINUE
+                .ENDIF
+            .ELSE
+                mov eax, g_lzState
+                add eax, LZ_ISREPG1
+                invoke LzBit, eax
+                .IF eax == 0
+                    mov eax, g_lzRep1
+                    mov mdist, eax
+                .ELSE
+                    mov eax, g_lzState
+                    add eax, LZ_ISREPG2
+                    invoke LzBit, eax
+                    .IF eax == 0
+                        mov eax, g_lzRep2
+                        mov mdist, eax
+                    .ELSE
+                        mov eax, g_lzRep3
+                        mov mdist, eax
+                        mov eax, g_lzRep2
+                        mov g_lzRep3, eax
+                    .ENDIF
+                    mov eax, g_lzRep1
+                    mov g_lzRep2, eax
+                .ENDIF
+                mov eax, g_lzRep0
+                mov g_lzRep1, eax
+                mov eax, mdist
+                mov g_lzRep0, eax
+            .ENDIF
+            invoke LzLenDec, LZ_REPLEN, posState
+            add eax, 2
+            mov mlen, eax
+            mov eax, 8
+            .IF g_lzState >= 7
+                mov eax, 11
+            .ENDIF
+            mov g_lzState, eax
+        .ENDIF
+        ; ---- copy mlen bytes from distance rep0 ----
+        mov eax, g_lzRep0
+        .IF eax >= g_lzPos
+            mov g_zfErr, 1
+            .BREAK
+        .ENDIF
+        mov eax, g_lzPos
+        add eax, mlen
+        .IF eax > outCb
+            mov g_zfErr, 1
+            .BREAK
+        .ENDIF
+        mov eax, mlen
+        add g_lzPos, eax
+        mov edx, g_lzRep0
+        inc edx
+        mov mdist, edx
+        .WHILE mlen != 0 && g_zfErr == 0
+            .IF g_zfOutPos >= ZF_OUTBUF
+                invoke ZfOutFlush
+            .ENDIF
+            mov eax, mdist
+            .IF eax > g_zfOutPos
+                mov g_zfErr, 1
+                .BREAK
+            .ENDIF
+            mov ecx, mlen
+            .IF ecx > 512
+                mov ecx, 512
+            .ENDIF
+            sub mlen, ecx
+            mov edi, g_zfOut
+            add edi, g_zfOutPos
+            mov esi, edi
+            sub esi, mdist
+            add g_zfOutPos, ecx
+            rep movsb
+        .ENDW
+    .ENDW
+    xor eax, eax
+    .IF g_zfErr == 0
+        mov eax, g_lzPos
+        .IF eax == outCb
+            mov eax, TRUE
+        .ELSE
+            xor eax, eax
+        .ENDIF
+    .ENDIF
+    ret
+LzmaDecode ENDP
+
+
+; ---------------------------------------------------------------------------
+; CHD v5 (MAME): big-endian 124-byte header, a Huffman-RLE compressed hunk map,
+; then hunks compressed with up to four codecs. This build carries zlib (raw
+; deflate) and lzma hunks plus stored and self-referencing ones; FLAC, custom
+; Huffman hunks, CD-specialised codecs and parented CHDs are declined.
+; ---------------------------------------------------------------------------
+CHD_HUNKMAX     equ 131072
+CHD_MAPMAX      equ 64 * 1024 * 1024
+CHD_COUNTMAX    equ 800000h
+
+.data
+szChdMagic      db 'MComprHD'
+g_chBitsPtr     dd 0                    ; map bitstream, MSB first
+g_chBitPos      dd 0
+g_chBitMax      dd 0
+g_chLens        db 16 dup(0)
+g_chCodes       dw 16 dup(0)
+
+.code
+
+ChBits PROC USES ebx esi n:DWORD
+    xor esi, esi
+    mov ebx, n
+    .WHILE ebx != 0
+        mov eax, g_chBitPos
+        .IF eax >= g_chBitMax
+            mov g_zfErr, 1
+            .BREAK
+        .ENDIF
+        mov ecx, eax
+        shr eax, 3
+        mov edx, g_chBitsPtr
+        movzx eax, byte ptr [edx + eax]
+        and ecx, 7
+        xor ecx, 7                      ; bit 7 first
+        shr eax, cl
+        and eax, 1
+        shl esi, 1
+        or esi, eax
+        inc g_chBitPos
+        dec ebx
+    .ENDW
+    mov eax, esi
+    ret
+ChBits ENDP
+
+; Import the 16-symbol RLE-coded tree, then assign MAME's canonical codes
+ChTreeImport PROC USES ebx edi
+    LOCAL histo[33]:DWORD
+    LOCAL curstart:DWORD
+    xor ebx, ebx
+    .WHILE ebx < 16 && g_zfErr == 0
+        invoke ChBits, 4
+        .IF eax != 1
+            mov byte ptr g_chLens[ebx], al
+            inc ebx
+        .ELSE
+            invoke ChBits, 4
+            .IF eax == 1
+                mov byte ptr g_chLens[ebx], 1
+                inc ebx
+            .ELSE
+                mov edi, eax            ; repeated length value
+                invoke ChBits, 4
+                add eax, 3
+                .WHILE eax != 0 && ebx < 16
+                    mov ecx, edi
+                    mov byte ptr g_chLens[ebx], cl
+                    inc ebx
+                    dec eax
+                .ENDW
+            .ENDIF
+        .ENDIF
+    .ENDW
+    .IF g_zfErr != 0
+        mov eax, 1
+        ret
+    .ENDIF
+    lea edi, histo
+    xor eax, eax
+    mov ecx, 33
+    rep stosd
+    xor ebx, ebx
+    .WHILE ebx < 16
+        movzx eax, byte ptr g_chLens[ebx]
+        .IF eax > 8
+            mov eax, 1
+            ret
+        .ENDIF
+        .IF eax != 0
+            inc dword ptr histo[eax * 4]
+        .ENDIF
+        inc ebx
+    .ENDW
+    mov curstart, 0
+    mov ebx, 32
+    .WHILE ebx > 0
+        mov eax, curstart
+        add eax, dword ptr histo[ebx * 4]
+        mov ecx, eax
+        shr eax, 1
+        .IF ebx != 1
+            mov edx, eax
+            shl edx, 1
+            .IF edx != ecx              ; tree is not exactly full
+                mov eax, 1
+                ret
+            .ENDIF
+        .ENDIF
+        mov ecx, curstart
+        mov dword ptr histo[ebx * 4], ecx
+        mov curstart, eax
+        dec ebx
+    .ENDW
+    xor ebx, ebx
+    .WHILE ebx < 16
+        movzx eax, byte ptr g_chLens[ebx]
+        .IF eax != 0
+            mov ecx, dword ptr histo[eax * 4]
+            mov word ptr g_chCodes[ebx * 2], cx
+            inc ecx
+            mov dword ptr histo[eax * 4], ecx
+        .ENDIF
+        inc ebx
+    .ENDW
+    xor eax, eax
+    ret
+ChTreeImport ENDP
+
+; One symbol, bit by bit against the canonical table
+ChTreeDecode PROC USES ebx esi
+    xor esi, esi
+    xor ebx, ebx
+    .WHILE ebx < 8 && g_zfErr == 0
+        invoke ChBits, 1
+        shl esi, 1
+        or esi, eax
+        inc ebx
+        xor ecx, ecx
+        .WHILE ecx < 16
+            movzx eax, byte ptr g_chLens[ecx]
+            .IF eax == ebx
+                movzx edx, word ptr g_chCodes[ecx * 2]
+                .IF edx == esi
+                    mov eax, ecx
+                    ret
+                .ENDIF
+            .ENDIF
+            inc ecx
+        .ENDW
+    .ENDW
+    mov g_zfErr, 1
+    xor eax, eax
+    ret
+ChTreeDecode ENDP
+
+ChdExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
+    LOCAL hIn:DWORD
+    LOCAL hOut:DWORD
+    LOCAL hdr[124]:BYTE
+    LOCAL comps[4]:DWORD
+    LOCAL totLo:DWORD
+    LOCAL totHi:DWORD
+    LOCAL mapLo:DWORD
+    LOCAL mapHi:DWORD
+    LOCAL hunkBytes:DWORD
+    LOCAL nHunks:DWORD
+    LOCAL mapLen:DWORD
+    LOCAL dsLo:DWORD
+    LOCAL dsHi:DWORD
+    LOCAL lenBits:DWORD
+    LOCAL selfBits:DWORD
+    LOCAL pBits:DWORD
+    LOCAL pMap:DWORD
+    LOCAL pScratch:DWORD
+    LOCAL haveLzma:DWORD
+    LOCAL lastComp:DWORD
+    LOCAL repCount:DWORD
+    LOCAL curLo:DWORD
+    LOCAL curHi:DWORD
+    LOCAL i:DWORD
+    LOCAL remLo:DWORD
+    LOCAL remHi:DWORD
+    LOCAL thisCb:DWORD
+    LOCAL mhdr[16]:BYTE
+    LOCAL fourcc:DWORD
+    LOCAL ok:DWORD
+
+    mov ok, FALSE
+    mov hOut, INVALID_HANDLE_VALUE
+    mov pBits, 0
+    mov pMap, 0
+    mov pScratch, 0
+    mov haveLzma, 0
+    invoke CreateFileW, pszSrc, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    .IF eax == INVALID_HANDLE_VALUE
+        xor eax, eax
+        ret
+    .ENDIF
+    mov hIn, eax
+    invoke FileReadAt, hIn, 0, 0, addr hdr, 124
+    .IF eax != 124
+        jmp done
+    .ENDIF
+    lea esi, hdr
+    mov edi, offset szChdMagic
+    mov ecx, 8
+    repe cmpsb
+    jne done
+    invoke BSwap32, dword ptr hdr[12]
+    .IF eax != 5                        ; only v5
+        jmp done
+    .ENDIF
+    ; codecs: only raw deflate and lzma hunks are decodable here
+    xor ebx, ebx
+    .WHILE ebx < 4
+        mov eax, dword ptr hdr[ebx * 4 + 16]
+        mov dword ptr comps[ebx * 4], eax
+        .IF eax == 616D7A6Ch            ; "lzma"
+            mov haveLzma, 1
+        .ELSEIF eax != 0 && eax != 62696C7Ah    ; "zlib"
+            jmp done
+        .ENDIF
+        inc ebx
+    .ENDW
+    ; no deltas from a parent image
+    mov ecx, 104
+    xor eax, eax
+    .WHILE ecx < 124
+        or al, byte ptr hdr[ecx]
+        inc ecx
+    .ENDW
+    .IF eax != 0
+        jmp done
+    .ENDIF
+    invoke BSwap32, dword ptr hdr[32]
+    mov totHi, eax
+    invoke BSwap32, dword ptr hdr[36]
+    mov totLo, eax
+    mov eax, totLo
+    or eax, totHi
+    .IF eax == 0
+        jmp done
+    .ENDIF
+    mov eax, totLo
+    mov remLo, eax
+    mov eax, totHi
+    mov remHi, eax
+    invoke BSwap32, dword ptr hdr[40]
+    mov mapHi, eax
+    invoke BSwap32, dword ptr hdr[44]
+    mov mapLo, eax
+    invoke BSwap32, dword ptr hdr[56]
+    mov hunkBytes, eax
+    .IF eax < 512 || eax > CHD_HUNKMAX
+        jmp done
+    .ENDIF
+    ; hunk count = ceil(total / hunk size)
+    mov eax, totLo
+    mov edx, totHi
+    add eax, hunkBytes
+    adc edx, 0
+    sub eax, 1
+    sbb edx, 0
+    mov ecx, eax                        ; 64/32 divide, quotient must fit 32 bits
+    mov eax, edx
+    xor edx, edx
+    div hunkBytes
+    .IF eax != 0
+        jmp done
+    .ENDIF
+    mov eax, ecx
+    div hunkBytes
+    mov nHunks, eax
+    .IF eax == 0 || eax > CHD_COUNTMAX
+        jmp done
+    .ENDIF
+    shl eax, 4
+    invoke VfsAlloc, eax                ; per hunk: comp, length, offset lo, offset hi
+    mov pMap, eax
+    .IF eax == 0
+        jmp done
+    .ENDIF
+
+    .IF dword ptr comps[0] == 0
+        ; uncompressed: the map is one big-endian dword per hunk, in hunk units
+        mov eax, nHunks
+        shl eax, 2
+        invoke VfsAlloc, eax
+        mov pBits, eax
+        .IF eax == 0
+            jmp done
+        .ENDIF
+        mov eax, nHunks
+        shl eax, 2
+        invoke FileReadAt, hIn, mapLo, mapHi, pBits, eax
+        mov ecx, nHunks
+        shl ecx, 2
+        .IF eax != ecx
+            jmp done
+        .ENDIF
+        mov i, 0
+        .WHILE TRUE
+            mov eax, i
+            .BREAK .IF eax >= nHunks
+            mov ecx, pBits
+            invoke BSwap32, dword ptr [ecx + eax * 4]
+            mul hunkBytes               ; entry * hunkbytes = byte offset
+            mov esi, pMap
+            mov ecx, i
+            shl ecx, 4
+            mov dword ptr [esi + ecx], 4        ; treat as stored
+            mov ebx, hunkBytes
+            mov dword ptr [esi + ecx + 4], ebx
+            mov dword ptr [esi + ecx + 8], eax
+            mov dword ptr [esi + ecx + 12], edx
+            inc i
+        .ENDW
+    .ELSE
+        ; compressed map: 16-byte header then the Huffman-RLE bitstream
+        invoke FileReadAt, hIn, mapLo, mapHi, addr mhdr, 16
+        .IF eax != 16
+            jmp done
+        .ENDIF
+        invoke BSwap32, dword ptr mhdr[0]
+        mov mapLen, eax
+        .IF eax == 0 || eax > CHD_MAPMAX
+            jmp done
+        .ENDIF
+        movzx eax, byte ptr mhdr[4]
+        shl eax, 8
+        movzx ecx, byte ptr mhdr[5]
+        or eax, ecx
+        mov dsHi, eax
+        invoke BSwap32, dword ptr mhdr[6]
+        mov dsLo, eax
+        movzx eax, byte ptr mhdr[12]
+        mov lenBits, eax
+        .IF eax == 0 || eax > 31
+            jmp done
+        .ENDIF
+        movzx eax, byte ptr mhdr[13]
+        mov selfBits, eax
+        .IF eax > 31
+            jmp done
+        .ENDIF
+        invoke VfsAlloc, mapLen
+        mov pBits, eax
+        .IF eax == 0
+            jmp done
+        .ENDIF
+        mov eax, mapLo
+        add eax, 16
+        mov ecx, mapHi
+        adc ecx, 0
+        invoke FileReadAt, hIn, eax, ecx, pBits, mapLen
+        .IF eax != mapLen
+            jmp done
+        .ENDIF
+        mov eax, pBits
+        mov g_chBitsPtr, eax
+        mov g_chBitPos, 0
+        mov eax, mapLen
+        shl eax, 3
+        mov g_chBitMax, eax
+        mov g_zfErr, 0
+        invoke ChTreeImport
+        .IF eax != 0 || g_zfErr != 0
+            jmp done
+        .ENDIF
+        ; pass 1: compression type per hunk, with the RLE escapes
+        mov lastComp, 0
+        mov repCount, 0
+        mov i, 0
+        .WHILE g_zfErr == 0
+            mov eax, i
+            .BREAK .IF eax >= nHunks
+            .IF repCount != 0
+                dec repCount
+                mov eax, lastComp
+            .ELSE
+                invoke ChTreeDecode
+                .IF eax == 7            ; small repeat
+                    invoke ChTreeDecode
+                    add eax, 2
+                    mov repCount, eax
+                    mov eax, lastComp
+                .ELSEIF eax == 8        ; large repeat
+                    invoke ChTreeDecode
+                    shl eax, 4
+                    add eax, 2 + 16
+                    push eax
+                    invoke ChTreeDecode
+                    pop ecx
+                    add eax, ecx
+                    mov repCount, eax
+                    mov eax, lastComp
+                .ELSE
+                    mov lastComp, eax
+                .ENDIF
+            .ENDIF
+            .IF eax > 5                 ; parent references and junk
+                jmp done
+            .ENDIF
+            mov esi, pMap
+            mov ecx, i
+            shl ecx, 4
+            mov dword ptr [esi + ecx], eax
+            inc i
+        .ENDW
+        .IF g_zfErr != 0
+            jmp done
+        .ENDIF
+        ; pass 2: lengths and offsets
+        mov eax, dsLo
+        mov curLo, eax
+        mov eax, dsHi
+        mov curHi, eax
+        mov i, 0
+        .WHILE g_zfErr == 0
+            mov eax, i
+            .BREAK .IF eax >= nHunks
+            mov esi, pMap
+            mov ecx, i
+            shl ecx, 4
+            add esi, ecx
+            mov eax, dword ptr [esi]
+            .IF eax <= 3
+                invoke ChBits, lenBits
+                mov dword ptr [esi + 4], eax
+                mov ecx, curLo
+                mov dword ptr [esi + 8], ecx
+                mov ecx, curHi
+                mov dword ptr [esi + 12], ecx
+                add curLo, eax
+                adc curHi, 0
+            .ELSEIF eax == 4
+                mov eax, hunkBytes
+                mov dword ptr [esi + 4], eax
+                mov ecx, curLo
+                mov dword ptr [esi + 8], ecx
+                mov ecx, curHi
+                mov dword ptr [esi + 12], ecx
+                add curLo, eax
+                adc curHi, 0
+            .ELSE                       ; self reference: hunk number
+                invoke ChBits, selfBits
+                mov dword ptr [esi + 4], 0
+                mov dword ptr [esi + 8], eax
+                mov dword ptr [esi + 12], 0
+            .ENDIF
+            inc i
+        .ENDW
+        .IF g_zfErr != 0
+            jmp done
+        .ENDIF
+    .ENDIF
+
+    invoke CreateFileW, pszDst, GENERIC_READ or GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL
+    .IF eax == INVALID_HANDLE_VALUE
+        jmp done
+    .ENDIF
+    mov hOut, eax
+    invoke ZfExpandInit, hIn, hOut
+    .IF eax == 0
+        jmp done
+    .ENDIF
+    .IF haveLzma != 0
+        invoke LzmaAlloc, 3, 0, 2       ; chdman's fixed literal/position parameters
+        .IF eax == 0
+            jmp done
+        .ENDIF
+    .ENDIF
+    invoke VfsAlloc, hunkBytes
+    mov pScratch, eax
+    .IF eax == 0
+        jmp done
+    .ENDIF
+
+    mov i, 0
+    .WHILE g_zfErr == 0
+        mov eax, i
+        .BREAK .IF eax >= nHunks
+        mov esi, pMap
+        mov ecx, i
+        shl ecx, 4
+        add esi, ecx
+        mov eax, hunkBytes
+        .IF remHi == 0 && eax > remLo
+            mov eax, remLo
+        .ENDIF
+        mov thisCb, eax
+        mov eax, dword ptr [esi]
+        .IF eax <= 3
+            mov ecx, dword ptr comps[eax * 4]
+            mov fourcc, ecx
+            invoke ZfSetInput, dword ptr [esi + 8], dword ptr [esi + 12]
+            .IF fourcc == 62696C7Ah     ; zlib: raw deflate
+                invoke ZfInflate
+            .ELSE                       ; lzma
+                invoke LzmaStart
+                invoke LzmaDecode, thisCb
+            .ENDIF
+        .ELSEIF eax == 4                ; stored
+            invoke ZfSetInput, dword ptr [esi + 8], dword ptr [esi + 12]
+            invoke ZfRawCopy, thisCb
+        .ELSE                           ; self: re-emit an earlier hunk
+            mov eax, dword ptr [esi + 8]
+            .IF eax >= i
+                mov g_zfErr, 1
+                .BREAK
+            .ENDIF
+            invoke ZfOutFinal           ; everything so far must be on disk
+            mov eax, dword ptr [esi + 8]
+            mul hunkBytes
+            invoke FileReadAt, hOut, eax, edx, pScratch, thisCb
+            .IF eax != thisCb
+                mov g_zfErr, 1
+                .BREAK
+            .ENDIF
+            invoke SetFilePointerEx, hOut, 0, 0, NULL, FILE_END
+            mov ebx, 0
+            .WHILE ebx < thisCb && g_zfErr == 0
+                mov ecx, pScratch
+                movzx eax, byte ptr [ecx + ebx]
+                invoke ZfPutB, eax
+                inc ebx
+            .ENDW
+        .ENDIF
+        mov eax, thisCb
+        sub remLo, eax
+        sbb remHi, 0
+        inc i
+    .ENDW
+    invoke ZfOutFinal
+    .IF g_zfErr == 0
+        mov eax, g_zfTotHi
+        .IF eax > totHi
+            mov ok, TRUE
+        .ELSEIF eax == totHi
+            mov eax, g_zfTotLo
+            .IF eax >= totLo
+                mov ok, TRUE
+            .ENDIF
+        .ENDIF
+    .ENDIF
+    invoke ZfExpandFree
+done:
+    .IF haveLzma != 0
+        invoke LzmaFree
+    .ENDIF
+    invoke VfsFreeMem, pBits
+    invoke VfsFreeMem, pMap
+    invoke VfsFreeMem, pScratch
+    invoke CloseHandle, hIn
+    .IF hOut != INVALID_HANDLE_VALUE
+        invoke CloseHandle, hOut
+        .IF ok == 0
+            invoke DeleteFileW, pszDst
+        .ENDIF
+    .ENDIF
+    mov eax, ok
+    ret
+ChdExpandFile ENDP
 
 END
