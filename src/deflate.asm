@@ -644,6 +644,39 @@ ZfExpandFree PROC
     ret
 ZfExpandFree ENDP
 
+
+; Create the destination and prime an expansion session; INVALID_HANDLE_VALUE on failure
+ZfBeginOut PROC pszDst:DWORD, hIn:DWORD
+    LOCAL h:DWORD
+    invoke CreateFileW, pszDst, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL
+    .IF eax == INVALID_HANDLE_VALUE
+        ret
+    .ENDIF
+    mov h, eax
+    invoke ZfExpandInit, hIn, h
+    .IF eax == 0
+        invoke CloseHandle, h
+        invoke DeleteFileW, pszDst
+        mov eax, INVALID_HANDLE_VALUE
+        ret
+    .ENDIF
+    mov eax, h
+    ret
+ZfBeginOut ENDP
+
+; Common expander tail: close both files, drop the output when the expansion failed
+ZfClosePair PROC okv:DWORD, hIn:DWORD, hOut:DWORD, pszDst:DWORD
+    invoke CloseHandle, hIn
+    .IF hOut != INVALID_HANDLE_VALUE
+        invoke CloseHandle, hOut
+        .IF okv == 0
+            invoke DeleteFileW, pszDst
+        .ENDIF
+    .ENDIF
+    mov eax, okv
+    ret
+ZfClosePair ENDP
+
 ; ---------------------------------------------------------------------------
 ; gzip (RFC 1952): header, one deflate stream, CRC-32 + size trailer
 ; ---------------------------------------------------------------------------
@@ -738,12 +771,7 @@ GzExpandFile PROC USES ebx pszSrc:DWORD, pszDst:DWORD
     mov ok, TRUE
 done:
     invoke ZfExpandFree
-    invoke CloseHandle, hIn
-    invoke CloseHandle, hOut
-    .IF ok == 0
-        invoke DeleteFileW, pszDst
-    .ENDIF
-    mov eax, ok
+    invoke ZfClosePair, ok, hIn, hOut, pszDst
     ret
 GzExpandFile ENDP
 
@@ -886,15 +914,11 @@ free_cd:
     add eax, bestLho
     add eax, 30
     mov dataOff, eax
-    invoke CreateFileW, pszDst, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL
+    invoke ZfBeginOut, pszDst, hIn
     .IF eax == INVALID_HANDLE_VALUE
         jmp close_in
     .ENDIF
     mov hOut, eax
-    invoke ZfExpandInit, hIn, hOut
-    .IF eax == 0
-        jmp close_in
-    .ENDIF
     invoke ZfSetInput, dataOff, 0
     .IF bestMeth == 8
         invoke ZfInflate
@@ -911,14 +935,7 @@ free_cd:
     .ENDIF
     invoke ZfExpandFree
 close_in:
-    invoke CloseHandle, hIn
-    .IF hOut != INVALID_HANDLE_VALUE
-        invoke CloseHandle, hOut
-        .IF ok == 0
-            invoke DeleteFileW, pszDst
-        .ENDIF
-    .ENDIF
-    mov eax, ok
+    invoke ZfClosePair, ok, hIn, hOut, pszDst
     ret
 free_tail:
     invoke VfsFreeMem, pTail
@@ -1035,15 +1052,11 @@ CsoExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
     .IF eax != idxCb
         jmp done
     .ENDIF
-    invoke CreateFileW, pszDst, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL
+    invoke ZfBeginOut, pszDst, hIn
     .IF eax == INVALID_HANDLE_VALUE
         jmp done
     .ENDIF
     mov hOut, eax
-    invoke ZfExpandInit, hIn, hOut
-    .IF eax == 0
-        jmp done
-    .ENDIF
     mov i, 0
     .WHILE g_zfErr == 0
         mov eax, i
@@ -1127,14 +1140,7 @@ CsoExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
     invoke ZfExpandFree
 done:
     invoke VfsFreeMem, pIdx
-    invoke CloseHandle, hIn
-    .IF hOut != INVALID_HANDLE_VALUE
-        invoke CloseHandle, hOut
-        .IF ok == 0
-            invoke DeleteFileW, pszDst
-        .ENDIF
-    .ENDIF
-    mov eax, ok
+    invoke ZfClosePair, ok, hIn, hOut, pszDst
     ret
 CsoExpandFile ENDP
 
@@ -2115,15 +2121,11 @@ GczExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
     .IF eax != idxCb
         jmp done
     .ENDIF
-    invoke CreateFileW, pszDst, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL
+    invoke ZfBeginOut, pszDst, hIn
     .IF eax == INVALID_HANDLE_VALUE
         jmp done
     .ENDIF
     mov hOut, eax
-    invoke ZfExpandInit, hIn, hOut
-    .IF eax == 0
-        jmp done
-    .ENDIF
     mov i, 0
     .WHILE g_zfErr == 0
         mov eax, i
@@ -2174,14 +2176,7 @@ GczExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
     invoke ZfExpandFree
 done:
     invoke VfsFreeMem, pIdx
-    invoke CloseHandle, hIn
-    .IF hOut != INVALID_HANDLE_VALUE
-        invoke CloseHandle, hOut
-        .IF ok == 0
-            invoke DeleteFileW, pszDst
-        .ENDIF
-    .ENDIF
-    mov eax, ok
+    invoke ZfClosePair, ok, hIn, hOut, pszDst
     ret
 GczExpandFile ENDP
 
@@ -2270,15 +2265,11 @@ DaxExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
             jmp done
         .ENDIF
     .ENDIF
-    invoke CreateFileW, pszDst, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL
+    invoke ZfBeginOut, pszDst, hIn
     .IF eax == INVALID_HANDLE_VALUE
         jmp done
     .ENDIF
     mov hOut, eax
-    invoke ZfExpandInit, hIn, hOut
-    .IF eax == 0
-        jmp done
-    .ENDIF
     mov i, 0
     .WHILE g_zfErr == 0
         mov eax, i
@@ -2329,14 +2320,7 @@ DaxExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
 done:
     invoke VfsFreeMem, pOffs
     invoke VfsFreeMem, pNc
-    invoke CloseHandle, hIn
-    .IF hOut != INVALID_HANDLE_VALUE
-        invoke CloseHandle, hOut
-        .IF ok == 0
-            invoke DeleteFileW, pszDst
-        .ENDIF
-    .ENDIF
-    mov eax, ok
+    invoke ZfClosePair, ok, hIn, hOut, pszDst
     ret
 DaxExpandFile ENDP
 
@@ -2417,15 +2401,11 @@ JsoExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
     .IF eax != idxCb
         jmp done
     .ENDIF
-    invoke CreateFileW, pszDst, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL
+    invoke ZfBeginOut, pszDst, hIn
     .IF eax == INVALID_HANDLE_VALUE
         jmp done
     .ENDIF
     mov hOut, eax
-    invoke ZfExpandInit, hIn, hOut
-    .IF eax == 0
-        jmp done
-    .ENDIF
     mov i, 0
     .WHILE g_zfErr == 0
         mov eax, i
@@ -2467,14 +2447,7 @@ JsoExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
     invoke ZfExpandFree
 done:
     invoke VfsFreeMem, pIdx
-    invoke CloseHandle, hIn
-    .IF hOut != INVALID_HANDLE_VALUE
-        invoke CloseHandle, hOut
-        .IF ok == 0
-            invoke DeleteFileW, pszDst
-        .ENDIF
-    .ENDIF
-    mov eax, ok
+    invoke ZfClosePair, ok, hIn, hOut, pszDst
     ret
 JsoExpandFile ENDP
 
@@ -2555,15 +2528,11 @@ IszExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
         .IF remHi != 0
             jmp done
         .ENDIF
-        invoke CreateFileW, pszDst, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL
+        invoke ZfBeginOut, pszDst, hIn
         .IF eax == INVALID_HANDLE_VALUE
             jmp done
         .ENDIF
         mov hOut, eax
-        invoke ZfExpandInit, hIn, hOut
-        .IF eax == 0
-            jmp done
-        .ENDIF
         invoke ZfSetInput, dataLo, 0
         invoke ZfRawCopy, remLo
         jmp finish
@@ -2600,15 +2569,11 @@ IszExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
     .IF eax != idxCb
         jmp done
     .ENDIF
-    invoke CreateFileW, pszDst, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL
+    invoke ZfBeginOut, pszDst, hIn
     .IF eax == INVALID_HANDLE_VALUE
         jmp done
     .ENDIF
     mov hOut, eax
-    invoke ZfExpandInit, hIn, hOut
-    .IF eax == 0
-        jmp done
-    .ENDIF
     mov i, 0
     .WHILE g_zfErr == 0
         mov eax, i
@@ -2664,14 +2629,7 @@ finish:
     invoke ZfExpandFree
 done:
     invoke VfsFreeMem, pIdx
-    invoke CloseHandle, hIn
-    .IF hOut != INVALID_HANDLE_VALUE
-        invoke CloseHandle, hOut
-        .IF ok == 0
-            invoke DeleteFileW, pszDst
-        .ENDIF
-    .ENDIF
-    mov eax, ok
+    invoke ZfClosePair, ok, hIn, hOut, pszDst
     ret
 IszExpandFile ENDP
 
@@ -2755,15 +2713,11 @@ DaaExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
     .IF eax != idxCb
         jmp done
     .ENDIF
-    invoke CreateFileW, pszDst, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL
+    invoke ZfBeginOut, pszDst, hIn
     .IF eax == INVALID_HANDLE_VALUE
         jmp done
     .ENDIF
     mov hOut, eax
-    invoke ZfExpandInit, hIn, hOut
-    .IF eax == 0
-        jmp done
-    .ENDIF
     mov i, 0
     .WHILE g_zfErr == 0
         mov eax, i
@@ -2800,14 +2754,7 @@ DaaExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
     invoke ZfExpandFree
 done:
     invoke VfsFreeMem, pIdx
-    invoke CloseHandle, hIn
-    .IF hOut != INVALID_HANDLE_VALUE
-        invoke CloseHandle, hOut
-        .IF ok == 0
-            invoke DeleteFileW, pszDst
-        .ENDIF
-    .ENDIF
-    mov eax, ok
+    invoke ZfClosePair, ok, hIn, hOut, pszDst
     ret
 DaaExpandFile ENDP
 
@@ -3925,14 +3872,7 @@ done:
     invoke VfsFreeMem, pBits
     invoke VfsFreeMem, pMap
     invoke VfsFreeMem, pScratch
-    invoke CloseHandle, hIn
-    .IF hOut != INVALID_HANDLE_VALUE
-        invoke CloseHandle, hOut
-        .IF ok == 0
-            invoke DeleteFileW, pszDst
-        .ENDIF
-    .ENDIF
-    mov eax, ok
+    invoke ZfClosePair, ok, hIn, hOut, pszDst
     ret
 ChdExpandFile ENDP
 

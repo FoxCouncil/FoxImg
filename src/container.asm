@@ -967,116 +967,6 @@ WSTR szExtDaa, <.daa>
 
 .code
 
-CtOpenGz PROC pszPath:DWORD
-    LOCAL szOut[MAX_PATH]:WORD
-    invoke CtTempOut, addr szOut, pszPath
-    invoke GzExpandFile, pszPath, addr szOut
-    .IF eax == 0
-        ret
-    .ENDIF
-    invoke CtFinish, addr szOut, 0, 0, 0, 0, offset szCtGz
-    ret
-CtOpenGz ENDP
-
-CtOpenZip PROC pszPath:DWORD
-    LOCAL szOut[MAX_PATH]:WORD
-    invoke CtTempOut, addr szOut, pszPath
-    invoke ZipExpandFile, pszPath, addr szOut
-    .IF eax == 0
-        ret
-    .ENDIF
-    invoke CtFinish, addr szOut, 0, 0, 0, 0, offset szCtZip
-    ret
-CtOpenZip ENDP
-
-CtOpenCso PROC pszPath:DWORD
-    LOCAL szOut[MAX_PATH]:WORD
-    invoke CtTempOut, addr szOut, pszPath
-    invoke CsoExpandFile, pszPath, addr szOut
-    .IF eax == 0
-        ret
-    .ENDIF
-    invoke CtFinish, addr szOut, 0, 0, 0, 0, offset szCtCso
-    ret
-CtOpenCso ENDP
-
-CtOpenGcz PROC pszPath:DWORD
-    LOCAL szOut[MAX_PATH]:WORD
-    invoke CtTempOut, addr szOut, pszPath
-    invoke GczExpandFile, pszPath, addr szOut
-    .IF eax == 0
-        ret
-    .ENDIF
-    invoke CtFinish, addr szOut, 0, 0, 2048, 0, offset szCtGcz
-    ret
-CtOpenGcz ENDP
-
-CtOpenDax PROC pszPath:DWORD
-    LOCAL szOut[MAX_PATH]:WORD
-    invoke CtTempOut, addr szOut, pszPath
-    invoke DaxExpandFile, pszPath, addr szOut
-    .IF eax == 0
-        ret
-    .ENDIF
-    invoke CtFinish, addr szOut, 0, 0, 2048, 0, offset szCtDax
-    ret
-CtOpenDax ENDP
-
-CtOpenZso PROC pszPath:DWORD
-    LOCAL szOut[MAX_PATH]:WORD
-    invoke CtTempOut, addr szOut, pszPath
-    invoke CsoExpandFile, pszPath, addr szOut   ; same expander, ZISO magic selects LZ4
-    .IF eax == 0
-        ret
-    .ENDIF
-    invoke CtFinish, addr szOut, 0, 0, 2048, 0, offset szCtZso
-    ret
-CtOpenZso ENDP
-
-CtOpenJso PROC pszPath:DWORD
-    LOCAL szOut[MAX_PATH]:WORD
-    invoke CtTempOut, addr szOut, pszPath
-    invoke JsoExpandFile, pszPath, addr szOut
-    .IF eax == 0
-        ret
-    .ENDIF
-    invoke CtFinish, addr szOut, 0, 0, 2048, 0, offset szCtJso
-    ret
-CtOpenJso ENDP
-
-CtOpenIsz PROC pszPath:DWORD
-    LOCAL szOut[MAX_PATH]:WORD
-    invoke CtTempOut, addr szOut, pszPath
-    invoke IszExpandFile, pszPath, addr szOut
-    .IF eax == 0
-        ret
-    .ENDIF
-    invoke CtFinish, addr szOut, 0, 0, 0, 0, offset szCtIsz
-    ret
-CtOpenIsz ENDP
-
-CtOpenDaa PROC pszPath:DWORD
-    LOCAL szOut[MAX_PATH]:WORD
-    invoke CtTempOut, addr szOut, pszPath
-    invoke DaaExpandFile, pszPath, addr szOut
-    .IF eax == 0
-        ret
-    .ENDIF
-    invoke CtFinish, addr szOut, 0, 0, 0, 0, offset szCtDaa
-    ret
-CtOpenDaa ENDP
-
-CtOpenChd PROC pszPath:DWORD
-    LOCAL szOut[MAX_PATH]:WORD
-    invoke CtTempOut, addr szOut, pszPath
-    invoke ChdExpandFile, pszPath, addr szOut
-    .IF eax == 0
-        ret
-    .ENDIF
-    invoke CtFinish, addr szOut, 0, 0, 0, 0, offset szCtChd
-    ret
-CtOpenChd ENDP
-
 ; ---------------------------------------------------------------------------
 ; BlindWrite 5/6 (.b5t/.b6t): "BWT5 STREAM SIGN" descriptor beside a .b5i/.b6i
 ; data file. A chain of variable blocks leads to the data-block table, which
@@ -1461,6 +1351,39 @@ done:
     ret
 CtOpenC2d ENDP
 
+
+; expander-backed formats: extension, expander, display name, forced sector size
+.data
+g_ctExpTable    dd offset szExtGz,   offset GzExpandFile,  offset szCtGz,  0
+                dd offset szExtZip,  offset ZipExpandFile, offset szCtZip, 0
+                dd offset szExtCso,  offset CsoExpandFile, offset szCtCso, 0
+                dd offset szExtCiso, offset CsoExpandFile, offset szCtCso, 0
+                dd offset szExtZso,  offset CsoExpandFile, offset szCtZso, 2048
+                dd offset szExtGcz,  offset GczExpandFile, offset szCtGcz, 2048
+                dd offset szExtDax,  offset DaxExpandFile, offset szCtDax, 2048
+                dd offset szExtJso,  offset JsoExpandFile, offset szCtJso, 2048
+                dd offset szExtIsz,  offset IszExpandFile, offset szCtIsz, 0
+                dd offset szExtDaa,  offset DaaExpandFile, offset szCtDaa, 0
+                dd offset szExtChd,  offset ChdExpandFile, offset szCtChd, 0
+                dd 0
+
+.code
+
+; Expand through %TEMP% with the given expander, then open the result
+CtOpenVia PROC pszPath:DWORD, pfnExpand:DWORD, pszName:DWORD, secSize:DWORD
+    LOCAL szOut[MAX_PATH]:WORD
+    invoke CtTempOut, addr szOut, pszPath
+    lea eax, szOut
+    push eax
+    push pszPath
+    call pfnExpand
+    .IF eax == 0
+        ret
+    .ENDIF
+    invoke CtFinish, addr szOut, 0, 0, secSize, 0, pszName
+    ret
+CtOpenVia ENDP
+
 ; ---------------------------------------------------------------------------
 ; Entry points
 ; ---------------------------------------------------------------------------
@@ -1518,56 +1441,6 @@ CtResolve PROC pszPath:DWORD
         invoke CtOpenEcm, pszPath
         ret
     .ENDIF
-    invoke HasExt, pszPath, offset szExtGz
-    .IF eax != 0
-        invoke CtOpenGz, pszPath
-        ret
-    .ENDIF
-    invoke HasExt, pszPath, offset szExtZip
-    .IF eax != 0
-        invoke CtOpenZip, pszPath
-        ret
-    .ENDIF
-    invoke HasExt, pszPath, offset szExtCso
-    .IF eax != 0
-        invoke CtOpenCso, pszPath
-        ret
-    .ENDIF
-    invoke HasExt, pszPath, offset szExtCiso
-    .IF eax != 0
-        invoke CtOpenCso, pszPath
-        ret
-    .ENDIF
-    invoke HasExt, pszPath, offset szExtGcz
-    .IF eax != 0
-        invoke CtOpenGcz, pszPath
-        ret
-    .ENDIF
-    invoke HasExt, pszPath, offset szExtDax
-    .IF eax != 0
-        invoke CtOpenDax, pszPath
-        ret
-    .ENDIF
-    invoke HasExt, pszPath, offset szExtZso
-    .IF eax != 0
-        invoke CtOpenZso, pszPath
-        ret
-    .ENDIF
-    invoke HasExt, pszPath, offset szExtJso
-    .IF eax != 0
-        invoke CtOpenJso, pszPath
-        ret
-    .ENDIF
-    invoke HasExt, pszPath, offset szExtIsz
-    .IF eax != 0
-        invoke CtOpenIsz, pszPath
-        ret
-    .ENDIF
-    invoke HasExt, pszPath, offset szExtDaa
-    .IF eax != 0
-        invoke CtOpenDaa, pszPath
-        ret
-    .ENDIF
     invoke HasExt, pszPath, offset szExtB5t
     .IF eax != 0
         invoke CtOpenB6t, pszPath
@@ -1588,11 +1461,19 @@ CtResolve PROC pszPath:DWORD
         invoke CtOpenMdx, pszPath
         ret
     .ENDIF
-    invoke HasExt, pszPath, offset szExtChd
-    .IF eax != 0
-        invoke CtOpenChd, pszPath
-        ret
-    .ENDIF
+    ; expander-backed formats by table
+    push esi
+    mov esi, offset g_ctExpTable
+    .WHILE dword ptr [esi] != 0
+        invoke HasExt, pszPath, dword ptr [esi]
+        .IF eax != 0
+            invoke CtOpenVia, pszPath, dword ptr [esi + 4], dword ptr [esi + 8], dword ptr [esi + 12]
+            pop esi
+            ret
+        .ENDIF
+        add esi, 16
+    .ENDW
+    pop esi
     xor eax, eax
     ret
 CtResolve ENDP
