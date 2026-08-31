@@ -1255,6 +1255,111 @@ done:
 CtOpenB6t ENDP
 
 ; ---------------------------------------------------------------------------
+; MDX (Alcohol 120% v2): same "MEDIA DESCRIPTOR" magic as MDS but version 2,
+; with the track data appended to the descriptor file itself. Track blocks are
+; 80 bytes; encrypted or compressed images are declined.
+; ---------------------------------------------------------------------------
+.data
+WSTR szCtMdx, <MDX>
+WSTR szExtMdx, <.mdx>
+
+.code
+
+CtOpenMdx PROC USES esi edi ebx pszPath:DWORD
+    LOCAL hFile:DWORD
+    LOCAL hdr[96]:BYTE
+    LOCAL sess[32]:BYTE
+    LOCAL trk[80]:BYTE
+    LOCAL foot[32]:BYTE
+    LOCAL trkOff:DWORD
+    LOCAL nBlocks:DWORD
+    LOCAL i:DWORD
+    LOCAL secSize:DWORD
+    LOCAL baseLo:DWORD
+    LOCAL baseHi:DWORD
+    LOCAL lba:DWORD
+    LOCAL ok:DWORD
+
+    mov ok, FALSE
+    invoke CreateFileW, pszPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    .IF eax == INVALID_HANDLE_VALUE
+        ret
+    .ENDIF
+    mov hFile, eax
+    invoke FileReadAt, hFile, 0, 0, addr hdr, 96
+    .IF eax != 96
+        jmp done
+    .ENDIF
+    lea esi, hdr
+    mov edi, offset szMEDIA
+    mov ecx, 16
+    repe cmpsb
+    jne done
+    .IF byte ptr hdr[16] != 2               ; MDSv1 goes through CtOpenMds
+        jmp done
+    .ENDIF
+    .IF dword ptr hdr[88] != 0              ; encrypted
+        jmp done
+    .ENDIF
+    invoke FileReadAt, hFile, dword ptr hdr[80], 0, addr sess, 32
+    .IF eax != 32
+        jmp done
+    .ENDIF
+    movzx eax, byte ptr sess[10]            ; blocks in this session
+    mov nBlocks, eax
+    mov eax, dword ptr sess[20]
+    mov trkOff, eax
+    mov i, 0
+    .WHILE TRUE
+        mov eax, i
+        .BREAK .IF eax >= nBlocks
+        invoke FileReadAt, hFile, trkOff, 0, addr trk, 80
+        .BREAK .IF eax != 80
+        movzx eax, byte ptr trk[4]          ; point
+        .IF eax >= 1 && eax <= 99
+            movzx eax, byte ptr trk[0]
+            and eax, 7                      ; sector type: 2..5 are data
+            .IF eax >= 2 && eax <= 5
+                movzx eax, word ptr trk[16]
+                mov secSize, eax
+                .IF eax >= 2048 && eax <= 2448
+                    mov eax, dword ptr trk[36]
+                    mov lba, eax
+                    mov eax, dword ptr trk[40]
+                    mov baseLo, eax
+                    mov eax, dword ptr trk[44]
+                    mov baseHi, eax
+                    ; a footer with a compression table means compressed data
+                    mov eax, dword ptr trk[48]
+                    .IF eax != 0
+                        invoke FileReadAt, hFile, dword ptr trk[52], 0, addr foot, 32
+                        .IF eax == 32
+                            mov eax, dword ptr foot[24]
+                            or eax, dword ptr foot[28]
+                            .IF eax != 0
+                                jmp done
+                            .ENDIF
+                        .ENDIF
+                    .ENDIF
+                    mov ok, TRUE
+                    .BREAK
+                .ENDIF
+            .ENDIF
+        .ENDIF
+        add trkOff, 80
+        inc i
+    .ENDW
+done:
+    invoke CloseHandle, hFile
+    .IF ok != 0
+        invoke CtFinish, pszPath, baseLo, baseHi, secSize, lba, offset szCtMdx
+        mov ok, eax
+    .ENDIF
+    mov eax, ok
+    ret
+CtOpenMdx ENDP
+
+; ---------------------------------------------------------------------------
 ; C2D (WinOnCD / Roxio): header names the track table; tracks carry byte offset,
 ; sector size and first sector. The data sits in the same file.
 ; ---------------------------------------------------------------------------
@@ -1463,6 +1568,11 @@ CtResolve PROC pszPath:DWORD
     invoke HasExt, pszPath, offset szExtC2d
     .IF eax != 0
         invoke CtOpenC2d, pszPath
+        ret
+    .ENDIF
+    invoke HasExt, pszPath, offset szExtMdx
+    .IF eax != 0
+        invoke CtOpenMdx, pszPath
         ret
     .ENDIF
     xor eax, eax

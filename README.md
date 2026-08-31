@@ -33,6 +33,7 @@ The program is one small executable with no runtime dependencies.
 | Files over 4 GB | - | Yes | Yes | Stored in the UDF half only, as Windows install media does |
 | Nero | .nrg | Yes | No | v1 and v2, DAO and TAO chunk lists |
 | Alcohol 120% | .mds .mdf | Yes | No | First data track of the first session |
+| Alcohol MDX | .mdx | Yes | No | Single-file v2 descriptor; encrypted and compressed declined |
 | CloneCD | .ccd .img | Yes | No | Raw image beside the sheet |
 | DiscJuggler | .cdi | Yes | No | Found by signature scan |
 | Dreamcast | .gdi | Yes | No | Data track with its 45000 block base |
