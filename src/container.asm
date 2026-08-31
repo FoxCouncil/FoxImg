@@ -1065,6 +1065,285 @@ CtOpenDaa PROC pszPath:DWORD
 CtOpenDaa ENDP
 
 ; ---------------------------------------------------------------------------
+; BlindWrite 5/6 (.b5t/.b6t): "BWT5 STREAM SIGN" descriptor beside a .b5i/.b6i
+; data file. A chain of variable blocks leads to the data-block table, which
+; names the data file and gives byte offset, start sector and sector count.
+; ---------------------------------------------------------------------------
+.data
+szB6tSig        db 'BWT5 STREAM SIGN'
+WSTR szCtB6t, <BlindWrite>
+WSTR szExtB5t, <.b5t>
+WSTR szExtB6t, <.b6t>
+WSTR szCtC2d, <C2D>
+WSTR szExtC2d, <.c2d>
+szC2dSig1       db 'Roxio Im'
+szC2dSig2       db 'Adaptec '
+
+.code
+
+CtOpenB6t PROC USES esi edi ebx pszPath:DWORD
+    LOCAL pBuf:DWORD
+    LOCAL cb:DWORD
+    LOCAL p:DWORD
+    LOCAL dtype:DWORD
+    LOCAL nBlocks:DWORD
+    LOCAL i:DWORD
+    LOCAL bestSecs:DWORD
+    LOCAL bestBytes:DWORD
+    LOCAL bestOff:DWORD
+    LOCAL bestStart:DWORD
+    LOCAL fnPtr:DWORD
+    LOCAL fnLen:DWORD
+    LOCAL secSize:DWORD
+    LOCAL baseLo:DWORD
+    LOCAL baseHi:DWORD
+    LOCAL lba:DWORD
+    LOCAL szName[MAX_PATH]:WORD
+    LOCAL szData[MAX_PATH]:WORD
+    LOCAL ok:DWORD
+
+    mov ok, FALSE
+    invoke ReadTextFile, pszPath, addr cb
+    .IF eax == 0
+        ret
+    .ENDIF
+    mov pBuf, eax
+    mov esi, eax
+    .IF cb < 264
+        jmp done
+    .ENDIF
+    push esi
+    mov edi, offset szB6tSig
+    mov ecx, 16
+    repe cmpsb
+    pop esi
+    jne done
+    movzx eax, word ptr [esi + 48]          ; disc type, at 16 + 32
+    mov dtype, eax
+    ; skip: header, disc block 1, 32 junk, drive inquiry, volume id -> disc block 2 at 240
+    mov eax, 260
+    add eax, dword ptr [esi + 240]          ; mode page 2A
+    add eax, dword ptr [esi + 244]          ; unknown block
+    movzx ecx, word ptr [esi + 96]          ; PMA
+    add eax, ecx
+    movzx ecx, word ptr [esi + 98]          ; ATIP
+    add eax, ecx
+    movzx ecx, word ptr [esi + 100]         ; CD-TEXT
+    add eax, ecx
+    add eax, dword ptr [esi + 104]          ; BCA
+    add eax, dword ptr [esi + 120]          ; DVD structures
+    mov ecx, dtype
+    .IF ecx == 8 || ecx == 9 || ecx == 0Ah
+        movzx ecx, word ptr [esi + 102]     ; CD-ROM info
+    .ELSE
+        mov ecx, dword ptr [esi + 124]      ; DVD-ROM info
+    .ENDIF
+    add eax, ecx
+    mov p, eax
+    add eax, 8
+    .IF eax > cb
+        jmp done
+    .ENDIF
+    mov eax, p
+    mov ecx, dword ptr [esi + eax]          ; data block count
+    mov nBlocks, ecx
+    mov edx, dword ptr [esi + eax + 4]      ; drive path length
+    lea eax, [eax + edx + 8]
+    mov p, eax
+    .IF ecx == 0 || ecx > 64
+        jmp done
+    .ENDIF
+    mov bestSecs, 0
+    mov i, 0
+    .WHILE TRUE
+        mov eax, i
+        .BREAK .IF eax >= nBlocks
+        mov eax, p
+        add eax, 52
+        .IF eax > cb
+            jmp done
+        .ENDIF
+        mov ebx, p
+        mov eax, dword ptr [esi + ebx + 44] ; sectors in this block
+        .IF !(eax & 80000000h) && eax > bestSecs
+            mov ecx, dword ptr [esi + ebx + 4]
+            .IF ecx != 0
+                mov bestSecs, eax
+                mov bestBytes, ecx
+                mov eax, dword ptr [esi + ebx + 24]
+                mov bestOff, eax
+                mov eax, dword ptr [esi + ebx + 40]
+                mov bestStart, eax
+                lea eax, [esi + ebx + 52]
+                mov fnPtr, eax
+                mov eax, dword ptr [esi + ebx + 48]
+                mov fnLen, eax
+            .ENDIF
+        .ENDIF
+        mov eax, dword ptr [esi + ebx + 48]
+        lea eax, [ebx + eax + 52 + 4]
+        mov p, eax
+        .IF eax > cb
+            jmp done
+        .ENDIF
+        inc i
+    .ENDW
+    .IF bestSecs == 0
+        jmp done
+    .ENDIF
+    mov eax, bestBytes
+    xor edx, edx
+    div bestSecs
+    mov secSize, eax
+    .IF eax < 2048 || eax > 2448
+        jmp done
+    .ENDIF
+    mov eax, bestOff
+    mov baseLo, eax
+    mov baseHi, 0
+    mov eax, bestStart
+    mov lba, eax
+    .IF eax & 80000000h                     ; block covers lead-in: shift to sector 0
+        neg eax
+        mul secSize
+        add baseLo, eax
+        adc baseHi, edx
+        mov lba, 0
+    .ENDIF
+    ; data file: the leaf of the name stored in the descriptor
+    mov eax, fnLen
+    shr eax, 1
+    .IF eax == 0 || eax >= MAX_PATH
+        jmp try_ext
+    .ENDIF
+    push eax
+    mov ecx, eax
+    lea edi, szName
+    mov edx, fnPtr
+    .WHILE ecx != 0
+        mov ax, word ptr [edx]
+        mov word ptr [edi], ax
+        add edi, 2
+        add edx, 2
+        dec ecx
+    .ENDW
+    xor eax, eax
+    mov word ptr [edi], ax
+    pop eax
+    lea ecx, szName
+    invoke PathLeaf, ecx
+    invoke PathDirJoin, addr szData, pszPath, eax
+    invoke CtFinish, addr szData, baseLo, baseHi, secSize, lba, offset szCtB6t
+    mov ok, eax
+    .IF eax != 0
+        jmp done
+    .ENDIF
+try_ext:
+    ; fall back to the paired image: same name with the extension's t swapped for i
+    invoke lstrcpynW, addr szData, pszPath, MAX_PATH
+    invoke lstrlenW, addr szData
+    .IF eax != 0
+        lea ecx, szData
+        mov word ptr [ecx + eax * 2 - 2], 'i'
+        invoke CtFinish, addr szData, baseLo, baseHi, secSize, lba, offset szCtB6t
+        mov ok, eax
+    .ENDIF
+done:
+    invoke VfsFreeMem, pBuf
+    mov eax, ok
+    ret
+CtOpenB6t ENDP
+
+; ---------------------------------------------------------------------------
+; C2D (WinOnCD / Roxio): header names the track table; tracks carry byte offset,
+; sector size and first sector. The data sits in the same file.
+; ---------------------------------------------------------------------------
+CtOpenC2d PROC USES esi edi ebx pszPath:DWORD
+    LOCAL hFile:DWORD
+    LOCAL hdr[64]:BYTE
+    LOCAL nTracks:DWORD
+    LOCAL offTracks:DWORD
+    LOCAL pTrk:DWORD
+    LOCAL cbTrk:DWORD
+    LOCAL i:DWORD
+    LOCAL ok:DWORD
+
+    mov ok, FALSE
+    mov pTrk, 0
+    invoke CreateFileW, pszPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    .IF eax == INVALID_HANDLE_VALUE
+        ret
+    .ENDIF
+    mov hFile, eax
+    invoke FileReadAt, hFile, 0, 0, addr hdr, 64
+    .IF eax != 64
+        jmp done
+    .ENDIF
+    lea esi, hdr
+    mov eax, dword ptr [esi]
+    mov ecx, dword ptr [esi + 4]
+    .IF eax == dword ptr szC2dSig1 && ecx == dword ptr szC2dSig1[4]
+    .ELSEIF eax == dword ptr szC2dSig2 && ecx == dword ptr szC2dSig2[4]
+    .ELSE
+        jmp done
+    .ENDIF
+    movzx eax, word ptr [esi + 50]
+    mov nTracks, eax
+    .IF eax == 0 || eax > 256
+        jmp done
+    .ENDIF
+    mov eax, dword ptr [esi + 56]
+    mov offTracks, eax
+    mov eax, nTracks
+    mov ecx, 44
+    mul ecx
+    mov cbTrk, eax
+    invoke VfsAlloc, eax
+    mov pTrk, eax
+    .IF eax == 0
+        jmp done
+    .ENDIF
+    invoke FileReadAt, hFile, offTracks, 0, pTrk, cbTrk
+    .IF eax != cbTrk
+        jmp done
+    .ENDIF
+    mov esi, pTrk
+    mov i, 0
+    .WHILE TRUE
+        mov eax, i
+        .BREAK .IF eax >= nTracks
+        movzx eax, byte ptr [esi + 40]      ; mode: 0 audio, 1 mode1, 2 mode2, FF audio
+        movzx ecx, byte ptr [esi + 39]      ; index
+        .IF (eax == 1 || eax == 2) && ecx <= 1
+            .IF byte ptr [esi + 41] != 0    ; compressed C2D, not carried
+                jmp done
+            .ENDIF
+            mov eax, dword ptr [esi + 20]   ; sector size
+            .IF eax >= 2048 && eax <= 2448
+                push eax
+                invoke CloseHandle, hFile
+                mov hFile, INVALID_HANDLE_VALUE
+                pop eax
+                push esi
+                invoke CtFinish, pszPath, dword ptr [esi + 12], dword ptr [esi + 16], eax, dword ptr [esi + 4], offset szCtC2d
+                pop esi
+                mov ok, eax
+                jmp done
+            .ENDIF
+        .ENDIF
+        add esi, 44
+        inc i
+    .ENDW
+done:
+    invoke VfsFreeMem, pTrk
+    .IF hFile != INVALID_HANDLE_VALUE
+        invoke CloseHandle, hFile
+    .ENDIF
+    mov eax, ok
+    ret
+CtOpenC2d ENDP
+
+; ---------------------------------------------------------------------------
 ; Entry points
 ; ---------------------------------------------------------------------------
 CtReset PROC
@@ -1169,6 +1448,21 @@ CtResolve PROC pszPath:DWORD
     invoke HasExt, pszPath, offset szExtDaa
     .IF eax != 0
         invoke CtOpenDaa, pszPath
+        ret
+    .ENDIF
+    invoke HasExt, pszPath, offset szExtB5t
+    .IF eax != 0
+        invoke CtOpenB6t, pszPath
+        ret
+    .ENDIF
+    invoke HasExt, pszPath, offset szExtB6t
+    .IF eax != 0
+        invoke CtOpenB6t, pszPath
+        ret
+    .ENDIF
+    invoke HasExt, pszPath, offset szExtC2d
+    .IF eax != 0
+        invoke CtOpenC2d, pszPath
         ret
     .ENDIF
     xor eax, eax

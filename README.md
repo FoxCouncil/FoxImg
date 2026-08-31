@@ -57,8 +57,8 @@ The program is one small executable with no runtime dependencies.
 | ISZ | .isz | Yes | No | UltraISO: zlib, raw and zero chunks; bzip2 and AES declined |
 | DAA | .daa | Yes | No | PowerISO v0x100 deflate; v0x110, LZMA and encrypted declined |
 | UIF | .uif | Planned | No | MagicISO |
-| BlindWrite | .b5t .b6t .bwt | Planned | No | |
-| C2D | .c2d | Planned | No | WinOnCD |
+| BlindWrite 5/6 | .b5t .b6t | Yes | No | Descriptor beside the .b5i/.b6i data file |
+| C2D | .c2d | Yes | No | WinOnCD / Roxio; compressed C2D declined |
 | PDI | .pdi | Planned | No | Instant CD/DVD |
 | DMG | .dmg | Planned | No | Apple: zlib / ADC chunks |
 | Unknown containers | any | Yes | No | Signature scan finds an ISO 9660 volume at any offset |
