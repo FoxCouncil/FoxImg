@@ -846,7 +846,6 @@ g_ecmOutPos     dd 0
 g_ecmHOut       dd 0
 szEcmTempFmt    dw '%','s','F','o','x','I','m','g','\','%','s','.','b','i','n',0
 szEcmDirFmt     dw '%','s','F','o','x','I','m','g',0
-szEcmSync       db 00h, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 00h
 WSTR szCtEcm, <ECM>
 WSTR szExtEcm, <.ecm>
 
@@ -1028,7 +1027,7 @@ CtOpenEcm PROC USES esi edi ebx pszPath:DWORD
             .BREAK .IF eax == 0
         .ELSE
             .WHILE num != 0
-                invoke EcmPut, offset szEcmSync, 12
+                invoke EcmPut, offset szSync, 12
                 .IF kind == 1
                     ; mode 1: address(3) + data(2048) stored
                     invoke EcmCopy, 3

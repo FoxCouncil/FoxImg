@@ -78,8 +78,8 @@ BEGIN
 END
 
 1 VERSIONINFO
-FILEVERSION     1,2,0,0
-PRODUCTVERSION  1,2,0,0
+FILEVERSION     2,0,0,0
+PRODUCTVERSION  2,0,0,0
 FILEOS          0x40004L
 FILETYPE        0x1L
 BEGIN
@@ -88,11 +88,11 @@ BEGIN
         BLOCK "040904B0"
         BEGIN
             VALUE "FileDescription",  "FoxImg disc image utility"
-            VALUE "FileVersion",      "1.2.0.0"
+            VALUE "FileVersion",      "2.0.0.0"
             VALUE "InternalName",     "FoxImg"
             VALUE "OriginalFilename", "FoxImg.exe"
             VALUE "ProductName",      "FoxImg"
-            VALUE "ProductVersion",   "1.2.0.0"
+            VALUE "ProductVersion",   "2.0.0.0"
         END
     END
     BLOCK "VarFileInfo"

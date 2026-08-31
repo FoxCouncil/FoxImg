@@ -12,20 +12,21 @@ g_saveGzip  dd 0
 
 WSTR szClassName, <FoxImgMain>
 WSTR szTitle, <FoxImg>
+szTitleA    db 'FoxImg', 0
 WSTR szOpenTitle, <Open Disc Image>
 WSTR szSaveTitle, <Save As / Convert>
 WSTR szAddFilesTitle, <Add Files>
 WSTR szBrowseTitle, <Choose a destination folder>
-WSTR szErrOpen, <Could not open this image. It is not a readable ISO 9660 volume, or it is larger than 2 GB (not supported yet).>
-WSTR szErrWrite, <Writing the image failed. Check free space and that the destination is writable.>
-WSTR szErrReplace, <The image was written but the original could not be replaced.>
-WSTR szErrExtract, <Some files could not be extracted.>
-WSTR szErrBoot, <Select a file in the list first. Directories cannot be boot images.>
-WSTR szBusy, <Please wait for the current operation to finish (or cancel it).>
-WSTR szDiscard, <Discard unsaved changes?>
-WSTR szDeleteAsk, <Delete the selected items from the image?>
-WSTR szDeleteDirAsk, <Delete this folder and everything inside it?>
-WSTR szAboutText, <FoxImg v1.2 - a small native disc image utility. ISO 9660 / Joliet / El Torito; ISO, IMG, BIN/CUE.>
+szErrOpen    db 'Could not open this image. No readable filesystem or track layout was found inside.', 0
+szErrWrite    db 'Writing the image failed. Check free space and that the destination is writable.', 0
+szErrReplace    db 'The image was written but the original could not be replaced.', 0
+szErrExtract    db 'Some files could not be extracted.', 0
+szErrBoot    db 'Select a file in the list first. Directories cannot be boot images.', 0
+szBusy    db 'Please wait for the current operation to finish (or cancel it).', 0
+szDiscard    db 'Discard unsaved changes?', 0
+szDeleteAsk    db 'Delete the selected items from the image?', 0
+szDeleteDirAsk    db 'Delete this folder and everything inside it?', 0
+szAboutText    db 'FoxImg v2.0 - a small native disc image tool. 31 readable formats from ISO to CHD, six built-in codecs, CD audio playback, one dependency-free exe.', 0
 WSTR szSaved, <Saved>
 WSTR szExtracted, <Extracted>
 WSTR szCancelled, <Cancelled>
@@ -86,7 +87,7 @@ ConfirmDiscard PROC
         mov eax, TRUE
         ret
     .ENDIF
-    invoke MessageBoxW, g_hWnd, offset szDiscard, offset szTitle, MB_YESNO or MB_ICONWARNING
+    invoke MessageBoxA, g_hWnd, offset szDiscard, offset szTitleA, MB_YESNO or MB_ICONWARNING
     .IF eax == IDYES
         mov eax, TRUE
     .ELSE
@@ -144,7 +145,7 @@ OpenImage PROC pszPath:DWORD
     invoke lstrcpynW, addr szLocal, pszPath, MAX_PATH
     invoke IsoOpen, addr szLocal
     .IF eax == 0
-        invoke MessageBoxW, g_hWnd, offset szErrOpen, offset szTitle, MB_OK or MB_ICONERROR
+        invoke MessageBoxA, g_hWnd, offset szErrOpen, offset szTitleA, MB_OK or MB_ICONERROR
         xor eax, eax
         ret
     .ENDIF
@@ -234,13 +235,13 @@ SaveFinish PROC result:DWORD
         ret
     .ENDIF
     .IF result == 0
-        invoke MessageBoxW, g_hWnd, offset szErrWrite, offset szTitle, MB_OK or MB_ICONERROR
+        invoke MessageBoxA, g_hWnd, offset szErrWrite, offset szTitleA, MB_OK or MB_ICONERROR
         ret
     .ENDIF
     invoke IsoClose                             ; release the mapping before replacing the file
     invoke MoveFileExW, offset g_saveTmp, offset g_saveData, MOVEFILE_REPLACE_EXISTING
     .IF eax == 0
-        invoke MessageBoxW, g_hWnd, offset szErrReplace, offset szTitle, MB_OK or MB_ICONERROR
+        invoke MessageBoxA, g_hWnd, offset szErrReplace, offset szTitleA, MB_OK or MB_ICONERROR
         .IF g_bHavePath != 0
             invoke OpenImage, offset g_szPath
         .ENDIF
@@ -265,7 +266,7 @@ AppJobFinished PROC kind:DWORD, result:DWORD
         .IF g_jobCancel != 0
             invoke UiSetStatus, offset szCancelled
         .ELSEIF result == 0
-            invoke MessageBoxW, g_hWnd, offset szErrExtract, offset szTitle, MB_OK or MB_ICONWARNING
+            invoke MessageBoxA, g_hWnd, offset szErrExtract, offset szTitleA, MB_OK or MB_ICONWARNING
             invoke UiSetStatus, offset szExtracted
         .ELSE
             invoke UiSetStatus, offset szExtracted
@@ -491,7 +492,7 @@ CmdDelete PROC
         .IF eax == 0 || eax == g_pRootNode
             ret
         .ENDIF
-        invoke MessageBoxW, g_hWnd, offset szDeleteDirAsk, offset szTitle, MB_YESNO or MB_ICONQUESTION
+        invoke MessageBoxA, g_hWnd, offset szDeleteDirAsk, offset szTitleA, MB_YESNO or MB_ICONQUESTION
         .IF eax != IDYES
             ret
         .ENDIF
@@ -506,7 +507,7 @@ CmdDelete PROC
         .IF eax == 0
             ret
         .ENDIF
-        invoke MessageBoxW, g_hWnd, offset szDeleteAsk, offset szTitle, MB_YESNO or MB_ICONQUESTION
+        invoke MessageBoxA, g_hWnd, offset szDeleteAsk, offset szTitleA, MB_YESNO or MB_ICONQUESTION
         .IF eax != IDYES
             ret
         .ENDIF
@@ -535,7 +536,7 @@ CmdBoot PROC platform:DWORD
         invoke BootSetEntry, eax, platform
     .ENDIF
     .IF eax == 0
-        invoke MessageBoxW, g_hWnd, offset szErrBoot, offset szTitle, MB_OK or MB_ICONINFORMATION
+        invoke MessageBoxA, g_hWnd, offset szErrBoot, offset szTitleA, MB_OK or MB_ICONINFORMATION
         ret
     .ENDIF
     invoke UiUpdateInfo
@@ -605,7 +606,7 @@ AppCommand PROC id:DWORD
     .ELSEIF eax == IDM_EXIT
         invoke SendMessageW, g_hWnd, WM_CLOSE, 0, 0
     .ELSEIF eax == IDM_ABOUT
-        invoke MessageBoxW, g_hWnd, offset szAboutText, offset szTitle, MB_OK or MB_ICONINFORMATION
+        invoke MessageBoxA, g_hWnd, offset szAboutText, offset szTitleA, MB_OK or MB_ICONINFORMATION
     .ENDIF
     ret
 AppCommand ENDP

@@ -352,6 +352,7 @@ GetClientRect       PROTO :DWORD,:DWORD
 InvalidateRect      PROTO :DWORD,:DWORD,:DWORD
 GetWindowRect       PROTO :DWORD,:DWORD
 MessageBoxW         PROTO :DWORD,:DWORD,:DWORD,:DWORD
+MessageBoxA         PROTO :DWORD,:DWORD,:DWORD,:DWORD
 SetWindowTextW      PROTO :DWORD,:DWORD
 wsprintfW           PROTO C :VARARG
 
@@ -1235,7 +1236,8 @@ FMT_ISO         equ 0                           ; 2048-byte blocks (.iso/.img/.b
 FMT_RAW2352_M1  equ 1                           ; raw 2352 MODE1  (data at +16)
 FMT_RAW2352_M2  equ 2                           ; raw 2352 MODE2 form 1 (data at +24)
 FMT_RAW2336     equ 3                           ; MODE2/2336 (data at +8)
-IsoSectorPtr    PROTO :DWORD                    ; lba -> pointer to 2048 user bytes or 0
+IsoSectorPtr    PROTO :DWORD
+EXTERNDEF szSync:BYTE                           ; the 12-byte CD sync pattern (iso9660.asm)                    ; lba -> pointer to 2048 user bytes or 0
 IsoCopyExtent   PROTO :DWORD,:DWORD,:DWORD      ; lba, cb, hOut -> BOOL
 IsoReadExtent   PROTO :DWORD,:DWORD,:DWORD      ; lba, cb, pDst -> BOOL
 IsoCopyBytes    PROTO :DWORD,:DWORD,:DWORD,:DWORD   ; lba, byteRem, cb, hOut -> BOOL

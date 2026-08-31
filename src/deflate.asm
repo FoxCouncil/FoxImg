@@ -3617,10 +3617,6 @@ ZfPutMem PROC USES esi edi ebx pSrc:DWORD, cb:DWORD
     ret
 ZfPutMem ENDP
 
-.data
-szCdSync        db 00h, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 00h
-
-.code
 
 ; One CD hunk (cdzl or cdlz): ecc bitmap and base-length header, then the sector
 ; halves (2352 bytes each) as one stream. The subcode stream that follows is of
@@ -3716,7 +3712,7 @@ ChdCdHunk PROC USES esi edi ebx offLo:DWORD, offHi:DWORD, cb:DWORD, isLzma:DWORD
             mov ecx, i
             imul ecx, 2352
             add edi, ecx
-            mov esi, offset szCdSync
+            mov esi, offset szSync
             mov ecx, 12
             rep movsb
         .ENDIF
