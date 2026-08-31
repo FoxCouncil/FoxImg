@@ -4746,4 +4746,469 @@ FlacDecodeStream PROC USES ebx sampPerChan:DWORD, swapEnd:DWORD
     ret
 FlacDecodeStream ENDP
 
+
+; ---------------------------------------------------------------------------
+; UIF (MagicISO): "bbis" footer, a zlib-packed table of blocks, then per block
+; raw data, implicit zeros, or a zlib stream, placed by output sector. Blocks
+; arrive in disc order in every image seen; anything else is declined, as are
+; password-protected images (their headers arrive DES-scrambled).
+; ---------------------------------------------------------------------------
+UIF_BLKMAX      equ 40000
+
+UifExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
+    LOCAL hIn:DWORD
+    LOCAL hOut:DWORD
+    LOCAL sizeLo:DWORD
+    LOCAL sizeHi:DWORD
+    LOCAL bbis[64]:BYTE
+    LOCAL secSize:DWORD
+    LOCAL totLo:DWORD
+    LOCAL totHi:DWORD
+    LOCAL nBlk:DWORD
+    LOCAL pTbl:DWORD
+    LOCAL i:DWORD
+    LOCAL nextSec:DWORD
+    LOCAL outCb:DWORD
+    LOCAL ok:DWORD
+
+    mov ok, FALSE
+    mov hOut, INVALID_HANDLE_VALUE
+    mov pTbl, 0
+    invoke CreateFileW, pszSrc, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    .IF eax == INVALID_HANDLE_VALUE
+        xor eax, eax
+        ret
+    .ENDIF
+    mov hIn, eax
+    invoke FileSize64, hIn, addr sizeLo, addr sizeHi
+    mov eax, sizeLo
+    sub eax, 64
+    mov ecx, sizeHi
+    sbb ecx, 0
+    mov totLo, eax
+    mov totHi, ecx
+    invoke FileReadAt, hIn, totLo, totHi, addr bbis, 64
+    .IF eax != 64 || dword ptr bbis[0] != 73696262h     ; "bbis"
+        jmp done
+    .ENDIF
+    mov eax, dword ptr bbis[20]
+    mov secSize, eax
+    .IF eax < 512 || eax > 2448
+        jmp done
+    .ENDIF
+    mov ecx, dword ptr bbis[16]             ; sector count
+    mul ecx
+    mov totLo, eax
+    mov totHi, edx
+    invoke ZfBeginOut, pszDst, hIn
+    .IF eax == INVALID_HANDLE_VALUE
+        jmp done
+    .ENDIF
+    mov hOut, eax
+    ; the block table sits zlib-packed behind a small header
+    invoke FileReadAt, hIn, dword ptr bbis[28], dword ptr bbis[32], addr bbis, 16
+    .IF eax != 16 || dword ptr bbis[0] != 72686C62h     ; "blhr" (a bsdr here means a password)
+        jmp done
+    .ENDIF
+    mov eax, dword ptr bbis[12]
+    mov nBlk, eax
+    .IF eax == 0 || eax > UIF_BLKMAX
+        jmp done
+    .ENDIF
+    ; the 16-byte header read only touched the front of the buffer, so the
+    ; footer's table offset at 28 is still intact
+    mov eax, dword ptr bbis[28]
+    add eax, 16
+    mov ecx, dword ptr bbis[32]
+    adc ecx, 0
+    invoke ZfSetInput, eax, ecx
+    invoke ZfZlibInflate                    ; the table lands at the front of the output buffer
+    mov eax, nBlk
+    lea eax, [eax + eax * 2]
+    shl eax, 3                              ; entries are 24 bytes
+    .IF g_zfErr != 0 || eax != g_zfOutPos
+        jmp done
+    .ENDIF
+    push eax
+    invoke VfsAlloc, eax
+    mov pTbl, eax
+    pop ecx
+    .IF eax == 0
+        jmp done
+    .ENDIF
+    mov esi, g_zfOut
+    mov edi, eax
+    rep movsb
+    mov g_zfOutPos, 0                       ; nothing was flushed; restart the real output
+    ; blocks: offset(8) zsize(4) sector(4) sizeInSectors(4) type(4)
+    mov nextSec, 0
+    mov i, 0
+    .WHILE g_zfErr == 0
+        mov eax, i
+        .BREAK .IF eax >= nBlk
+        mov esi, i
+        lea esi, [esi + esi * 2]
+        shl esi, 3
+        add esi, pTbl
+        mov eax, dword ptr [esi + 12]       ; output sector
+        mov ecx, nextSec
+        .IF eax < ecx
+            mov g_zfErr, 1                  ; out-of-order images are not handled
+            .BREAK
+        .ELSEIF eax > ecx
+            sub eax, ecx
+            mul secSize
+            .IF edx != 0
+                mov g_zfErr, 1
+                .BREAK
+            .ENDIF
+            invoke ZfPutZeros, eax
+        .ENDIF
+        mov eax, dword ptr [esi + 16]
+        mul secSize
+        .IF edx != 0
+            mov g_zfErr, 1
+            .BREAK
+        .ENDIF
+        mov outCb, eax
+        mov eax, dword ptr [esi + 20]       ; type
+        .IF eax == 3                        ; zeros
+            invoke ZfPutZeros, outCb
+        .ELSE
+            push eax
+            invoke ZfSetInput, dword ptr [esi], dword ptr [esi + 4]
+            pop eax
+            .IF eax == 1                    ; stored, zero-padded to full size
+                mov ebx, dword ptr [esi + 8]
+                .IF ebx > outCb
+                    mov g_zfErr, 1
+                    .BREAK
+                .ENDIF
+                invoke ZfRawCopy, ebx
+                mov eax, outCb
+                sub eax, ebx
+                invoke ZfPutZeros, eax
+            .ELSEIF eax == 5                ; zlib
+                invoke ZfZlibInflate
+            .ELSE
+                mov g_zfErr, 1
+                .BREAK
+            .ENDIF
+        .ENDIF
+        mov eax, dword ptr [esi + 12]
+        add eax, dword ptr [esi + 16]
+        mov nextSec, eax
+        inc i
+    .ENDW
+    invoke ZfOutFinal
+    .IF g_zfErr == 0
+        mov eax, g_zfTotHi
+        .IF eax > totHi
+            mov ok, TRUE
+        .ELSEIF eax == totHi
+            mov eax, g_zfTotLo
+            .IF eax >= totLo
+                mov ok, TRUE
+            .ENDIF
+        .ENDIF
+    .ENDIF
+    invoke ZfExpandFree
+done:
+    invoke VfsFreeMem, pTbl
+    invoke ZfClosePair, ok, hIn, hOut, pszDst
+    ret
+UifExpandFile ENDP
+
+; ---------------------------------------------------------------------------
+; DMG (Apple UDIF): 512-byte big-endian koly trailer names an XML property
+; list; every base64 <data> blob that decodes to a "mish" table describes the
+; chunks of one partition. Zlib, raw and zero chunks are enough for the
+; common UDZO/UDRO images; ADC, bzip2 and lzfse decline.
+; ---------------------------------------------------------------------------
+DMG_XMLMAX      equ 16 * 1024 * 1024
+DMG_MISHMAX     equ 8 * 1024 * 1024
+
+; base64 into pDst (at most cbMax); returns byte count (whitespace tolerated, stops at '<')
+DmgB64 PROC USES esi edi ebx pSrc:DWORD, cbSrc:DWORD, pDst:DWORD, cbMax:DWORD
+    LOCAL acc:DWORD
+    LOCAL nbits:DWORD
+    LOCAL pEnd:DWORD
+    mov eax, pDst
+    add eax, cbMax
+    mov pEnd, eax
+    mov esi, pSrc
+    mov edi, pDst
+    mov ebx, cbSrc
+    mov acc, 0
+    mov nbits, 0
+    .WHILE ebx != 0 && edi < pEnd
+        movzx eax, byte ptr [esi]
+        inc esi
+        dec ebx
+        .BREAK .IF eax == '<'
+        .IF eax >= 'A' && eax <= 'Z'
+            sub eax, 'A'
+        .ELSEIF eax >= 'a' && eax <= 'z'
+            sub eax, 'a' - 26
+        .ELSEIF eax >= '0' && eax <= '9'
+            add eax, 52 - '0'
+        .ELSEIF eax == '+'
+            mov eax, 62
+        .ELSEIF eax == '/'
+            mov eax, 63
+        .ELSE
+            .CONTINUE                       ; padding, whitespace, anything else
+        .ENDIF
+        mov ecx, acc
+        shl ecx, 6
+        or ecx, eax
+        mov acc, ecx
+        add nbits, 6
+        .IF nbits >= 8
+            mov ecx, nbits
+            sub ecx, 8
+            mov nbits, ecx
+            mov eax, acc
+            shr eax, cl
+            mov byte ptr [edi], al
+            inc edi
+        .ENDIF
+    .ENDW
+    mov eax, edi
+    sub eax, pDst
+    ret
+DmgB64 ENDP
+
+DmgExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
+    LOCAL hIn:DWORD
+    LOCAL hOut:DWORD
+    LOCAL sizeLo:DWORD
+    LOCAL sizeHi:DWORD
+    LOCAL koly[64]:BYTE
+    LOCAL forkLo:DWORD
+    LOCAL forkHi:DWORD
+    LOCAL xmlLo:DWORD
+    LOCAL xmlHi:DWORD
+    LOCAL xmlLen:DWORD
+    LOCAL pXml:DWORD
+    LOCAL pMish:DWORD
+    LOCAL scanPos:DWORD
+    LOCAL mishCb:DWORD
+    LOCAL nChunks:DWORD
+    LOCAL firstLo:DWORD
+    LOCAL firstHi:DWORD
+    LOCAL i:DWORD
+    LOCAL nextLo:DWORD
+    LOCAL nextHi:DWORD
+    LOCAL secLo:DWORD
+    LOCAL secHi:DWORD
+    LOCAL cntCb:DWORD
+    LOCAL ctype:DWORD
+    LOCAL produced:DWORD
+    LOCAL ok:DWORD
+
+    mov ok, FALSE
+    mov hOut, INVALID_HANDLE_VALUE
+    mov pXml, 0
+    mov pMish, 0
+    mov produced, 0
+    invoke CreateFileW, pszSrc, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    .IF eax == INVALID_HANDLE_VALUE
+        xor eax, eax
+        ret
+    .ENDIF
+    mov hIn, eax
+    invoke FileSize64, hIn, addr sizeLo, addr sizeHi
+    mov eax, sizeLo
+    sub eax, 512
+    mov ecx, sizeHi
+    sbb ecx, 0
+    mov xmlLo, eax
+    mov xmlHi, ecx
+    invoke FileReadAt, hIn, xmlLo, xmlHi, addr koly, 64
+    .IF eax != 64 || dword ptr koly[0] != 796C6F6Bh     ; "koly"
+        jmp done
+    .ENDIF
+    invoke BSwap32, dword ptr koly[24]
+    mov forkHi, eax
+    invoke BSwap32, dword ptr koly[28]
+    mov forkLo, eax
+    ; xml offset and length live at 216 within the trailer
+    mov eax, xmlLo
+    add eax, 216
+    mov ecx, xmlHi
+    adc ecx, 0
+    mov xmlLo, eax
+    mov xmlHi, ecx
+    invoke FileReadAt, hIn, xmlLo, xmlHi, addr koly, 16
+    .IF eax != 16
+        jmp done
+    .ENDIF
+    invoke BSwap32, dword ptr koly[0]
+    mov xmlHi, eax
+    invoke BSwap32, dword ptr koly[4]
+    mov xmlLo, eax
+    invoke BSwap32, dword ptr koly[8]
+    .IF eax != 0
+        jmp done
+    .ENDIF
+    invoke BSwap32, dword ptr koly[12]
+    mov xmlLen, eax
+    .IF eax == 0 || eax > DMG_XMLMAX
+        jmp done
+    .ENDIF
+    invoke VfsAlloc, xmlLen
+    mov pXml, eax
+    .IF eax == 0
+        jmp done
+    .ENDIF
+    invoke FileReadAt, hIn, xmlLo, xmlHi, pXml, xmlLen
+    .IF eax != xmlLen
+        jmp done
+    .ENDIF
+    invoke VfsAlloc, DMG_MISHMAX
+    mov pMish, eax
+    .IF eax == 0
+        jmp done
+    .ENDIF
+    invoke ZfBeginOut, pszDst, hIn
+    .IF eax == INVALID_HANDLE_VALUE
+        jmp done
+    .ENDIF
+    mov hOut, eax
+    mov nextLo, 0
+    mov nextHi, 0
+    ; every <data> blob that decodes to a mish table is one partition's chunks
+    mov scanPos, 0
+    .WHILE g_zfErr == 0
+        mov eax, scanPos
+        mov ecx, xmlLen
+        sub ecx, 6
+        .BREAK .IF eax >= ecx
+        mov esi, pXml
+        add esi, eax
+        .IF dword ptr [esi] == 7461643Ch && word ptr [esi + 4] == 3E61h     ; "<data>"
+            add eax, 6
+            mov scanPos, eax
+            mov esi, pXml
+            add esi, eax
+            mov ecx, xmlLen
+            sub ecx, eax
+            invoke DmgB64, esi, ecx, pMish, DMG_MISHMAX
+            mov mishCb, eax
+            .IF eax >= 204
+                mov esi, pMish
+                .IF dword ptr [esi] == 6873696Dh    ; "mish"
+                    invoke BSwap32, dword ptr [esi + 8]
+                    mov firstHi, eax
+                    invoke BSwap32, dword ptr [esi + 12]
+                    mov firstLo, eax
+                    invoke BSwap32, dword ptr [esi + 200]
+                    mov nChunks, eax
+                    mov ecx, eax
+                    shl ecx, 5
+                    lea ecx, [ecx + eax * 8]        ; chunks * 40
+                    add ecx, 204
+                    .IF ecx > mishCb
+                        mov g_zfErr, 1
+                        .BREAK
+                    .ENDIF
+                    mov i, 0
+                    .WHILE g_zfErr == 0
+                        mov eax, i
+                        .BREAK .IF eax >= nChunks
+                        mov esi, pMish
+                        mov ecx, eax
+                        shl ecx, 5
+                        lea ecx, [ecx + eax * 8]
+                        lea esi, [esi + ecx + 204]
+                        invoke BSwap32, dword ptr [esi]
+                        mov ctype, eax
+                        .BREAK .IF eax == 0FFFFFFFFh        ; terminator
+                        .IF eax == 7FFFFFFEh                ; comment
+                            inc i
+                            .CONTINUE
+                        .ENDIF
+                        ; absolute output sector = partition first + chunk sector
+                        invoke BSwap32, dword ptr [esi + 8]
+                        mov secHi, eax
+                        invoke BSwap32, dword ptr [esi + 12]
+                        mov secLo, eax
+                        mov eax, secLo
+                        add eax, firstLo
+                        mov secLo, eax
+                        mov eax, secHi
+                        adc eax, firstHi
+                        mov secHi, eax
+                        ; catch up with zeros when the chunk starts further out
+                        mov eax, secLo
+                        sub eax, nextLo
+                        mov ecx, secHi
+                        sbb ecx, nextHi
+                        .IF ecx != 0 && ecx != 0FFFFFFFFh
+                            mov g_zfErr, 1
+                            .BREAK
+                        .ENDIF
+                        .IF ecx == 0FFFFFFFFh || (ecx == 0 && eax & 80000000h)
+                            mov g_zfErr, 1                  ; overlapping chunks
+                            .BREAK
+                        .ENDIF
+                        .IF eax != 0
+                            shl eax, 9
+                            invoke ZfPutZeros, eax
+                        .ENDIF
+                        invoke BSwap32, dword ptr [esi + 20]
+                        shl eax, 9                          ; sectors to bytes
+                        mov cntCb, eax
+                        invoke BSwap32, dword ptr [esi + 16]
+                        .IF eax != 0
+                            mov g_zfErr, 1
+                            .BREAK
+                        .ENDIF
+                        mov eax, ctype
+                        .IF eax == 0 || eax == 2            ; zero fill / ignore
+                            invoke ZfPutZeros, cntCb
+                        .ELSE
+                            ; chunk data lives in the data fork
+                            invoke BSwap32, dword ptr [esi + 24]
+                            mov edx, eax
+                            invoke BSwap32, dword ptr [esi + 28]
+                            add eax, forkLo
+                            adc edx, forkHi
+                            invoke ZfSetInput, eax, edx
+                            mov eax, ctype
+                            .IF eax == 1                    ; raw
+                                invoke ZfRawCopy, cntCb
+                            .ELSEIF eax == 80000005h        ; zlib
+                                invoke ZfZlibInflate
+                            .ELSE                           ; ADC, bzip2, lzfse
+                                mov g_zfErr, 1
+                                .BREAK
+                            .ENDIF
+                        .ENDIF
+                        mov eax, cntCb
+                        shr eax, 9
+                        add nextLo, eax
+                        adc nextHi, 0
+                        mov produced, 1
+                        inc i
+                    .ENDW
+                .ENDIF
+            .ENDIF
+        .ELSE
+            inc scanPos
+        .ENDIF
+    .ENDW
+    invoke ZfOutFinal
+    .IF g_zfErr == 0 && produced != 0
+        mov ok, TRUE
+    .ENDIF
+    invoke ZfExpandFree
+done:
+    invoke VfsFreeMem, pXml
+    invoke VfsFreeMem, pMish
+    invoke ZfClosePair, ok, hIn, hOut, pszDst
+    ret
+DmgExpandFile ENDP
+
 END

@@ -57,11 +57,11 @@ The program is one small executable with no runtime dependencies.
 | NKit | .nkit.iso | Planned | No | Wii / GameCube |
 | ISZ | .isz | Yes | No | UltraISO: zlib, raw and zero chunks; bzip2 and AES declined |
 | DAA | .daa | Yes | No | PowerISO v0x100 deflate; v0x110, LZMA and encrypted declined |
-| UIF | .uif | Planned | No | MagicISO |
+| UIF | .uif | Yes | No | MagicISO: zlib, raw and zero blocks; passworded declined |
 | BlindWrite 5/6 | .b5t .b6t | Yes | No | Descriptor beside the .b5i/.b6i data file |
 | C2D | .c2d | Yes | No | WinOnCD / Roxio; compressed C2D declined |
 | PDI | .pdi | Planned | No | Instant CD/DVD |
-| DMG | .dmg | Planned | No | Apple: zlib / ADC chunks |
+| DMG | .dmg | Yes | No | Apple UDIF: zlib, raw and zero chunks; ADC, bzip2, lzfse declined |
 | Unknown containers | any | Yes | No | Signature scan finds an ISO 9660 volume at any offset |
 
 Read-only formats convert on save: open the image, then save it as ISO, BIN/CUE, or gzip ISO.

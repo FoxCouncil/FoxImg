@@ -1126,7 +1126,9 @@ DaxExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, PSP DAX
 JsoExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, PSP JSO (deflate method)
 IszExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, UltraISO ISZ (zlib chunks)
 DaaExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, PowerISO DAA v0x100
-ChdExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, MAME CHD v5 (zlib/lzma hunks)
+ChdExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, MAME CHD v5
+UifExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, MagicISO UIF
+DmgExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, Apple UDIF (zlib/raw/zero)
 GzCompressFile      PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL; worker progress + Cancel
 EXTERNDEF g_saveGzip:DWORD                      ; save target ends in .gz: worker gzips the image
 
