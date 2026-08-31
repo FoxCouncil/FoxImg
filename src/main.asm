@@ -26,7 +26,7 @@ szBusy    db 'Please wait for the current operation to finish (or cancel it).', 
 szDiscard    db 'Discard unsaved changes?', 0
 szDeleteAsk    db 'Delete the selected items from the image?', 0
 szDeleteDirAsk    db 'Delete this folder and everything inside it?', 0
-szAboutText    db 'FoxImg - a small native disc image tool. 31 readable formats from ISO to CHD, six built-in codecs, CD audio playback, one dependency-free exe.', 0
+szAboutText    db 'FoxImg v1.4 - a small native disc image tool. 31 readable formats from ISO to CHD, six built-in codecs, CD audio playback, one dependency-free exe.', 0
 WSTR szSaved, <Saved>
 WSTR szExtracted, <Extracted>
 WSTR szCancelled, <Cancelled>
