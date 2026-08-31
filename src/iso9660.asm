@@ -36,6 +36,8 @@ WSTR szFmtCdi, <CD-i>
 WSTR szFmtXdvdfs, <XDVDFS (Xbox)>
 WSTR szFmtOpera, <Opera (3DO)>
 WSTR szFmtGcm, <GCM (GameCube)>
+WSTR szFmtCda, <CD Audio>
+g_bAudioOnly    dd 0
 WSTR szFmtRaw2352, <RAW 2352 ISO 9660>
 WSTR szFmtRaw2336, <RAW 2336 ISO 9660>
 WSTR szFmtJoliet, < + Joliet>
@@ -143,10 +145,12 @@ IsoSectorPtr ENDP
 ; IsoClose - release mapping and file
 ; ---------------------------------------------------------------------------
 IsoClose PROC
+    invoke AudioStop
     invoke UdfClose
     invoke XdvdfsClose
     invoke OperaClose
     invoke GcClose
+    mov g_bAudioOnly, 0
     mov g_bCdi, 0
     .IF g_pView != 0
         invoke UnmapViewOfFile, g_pView
@@ -386,6 +390,10 @@ vd_done:
         .ENDIF
         .IF eax == 0
             invoke GcDetect
+        .ENDIF
+        .IF eax == 0 && g_ctNumTracks != 0
+            mov g_bAudioOnly, TRUE          ; audio tracks but no filesystem: still worth opening
+            mov eax, TRUE
         .ENDIF
         .IF eax != 0
             mov g_bContainer, TRUE
@@ -710,6 +718,9 @@ IsoFormatName PROC pszBuf:DWORD
         ret
     .ELSEIF g_bGcm != 0
         invoke lstrcpyW, pszBuf, offset szFmtGcm
+        ret
+    .ELSEIF g_bAudioOnly != 0
+        invoke lstrcpyW, pszBuf, offset szFmtCda
         ret
     .ENDIF
     mov pBase, offset szFmtIso

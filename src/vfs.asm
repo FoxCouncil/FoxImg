@@ -326,12 +326,17 @@ VfsBuildFromIso PROC USES esi
         invoke GcBuild, esi
         mov g_bModified, FALSE
         ret
+    .ELSEIF g_bAudioOnly != 0
+        invoke VfsAddCdTracks, esi          ; nothing but audio tracks on this disc
+        mov g_bModified, FALSE
+        ret
     .ENDIF
     ; UDF tree wins when present (Windows media keeps only a stub in the ISO 9660 half)
     invoke UdfOpen
     .IF eax != 0
         invoke UdfBuildTree, esi
         .IF eax != 0
+            invoke VfsAddCdTracks, esi
             mov g_bModified, FALSE
             ret
         .ENDIF
@@ -346,6 +351,7 @@ VfsBuildFromIso PROC USES esi
     mov ecx, [eax].ISO_DIRREC.dataLenLE
     mov [esi].NODE.dataSize, ecx
     invoke VfsPopulateIso, esi
+    invoke VfsAddCdTracks, esi
     mov g_bModified, FALSE
     ret
 VfsBuildFromIso ENDP
@@ -553,7 +559,10 @@ VfsCopyData PROC USES esi ebx pNode:DWORD, hOut:DWORD
 
     mov esi, pNode
     mov eax, [esi].NODE.nflags
-    .IF eax & NF_MEM
+    .IF eax & NF_CDA
+        invoke CdaCopyData, pNode, hOut
+        ret
+    .ELSEIF eax & NF_MEM
         invoke WriteAll, hOut, [esi].NODE.pszHost, [esi].NODE.dataSize
         ret
     .ELSEIF eax & NF_ISO

@@ -40,7 +40,9 @@ g_zfCrc         dd 0
 g_zfTotLo       dd 0
 g_zfTotHi       dd 0
 g_zfFixInit     dd 0
-g_zfWrapMode    dd 0                    ; deflate framing per file: 0 undecided, 1 raw, 2 zlib
+g_zfWrapMode    dd 0
+g_ctNumTracks   dd 0                    ; container track table (offLo, offHi, pcmBytes, audio)
+g_ctAudioSwap   dd 0                    ; audio PCM stored big-endian (CHD)                    ; deflate framing per file: 0 undecided, 1 raw, 2 zlib
 
 .data?
 g_zfLC          dw 16 dup(?)            ; dynamic literal/length table: counts per bit length, then symbols
@@ -52,11 +54,31 @@ g_zfFixLS       dw 288 dup(?)
 g_zfFixDC       dw 16 dup(?)
 g_zfFixDS       dw 32 dup(?)
 g_zfLens        db 320 dup(?)           ; scratch code lengths (max 286 + 30)
+g_ctTracks      dd CT_MAXTRK * 4 dup(?)
 
 .code
 
 ZfSmartInflate  PROTO
 Lz4Block        PROTO :DWORD
+
+CtTrackAdd PROC offLo:DWORD, offHi:DWORD, pcmBytes:DWORD, audio:DWORD
+    mov eax, g_ctNumTracks
+    .IF eax >= CT_MAXTRK
+        ret
+    .ENDIF
+    shl eax, 4
+    add eax, offset g_ctTracks
+    mov ecx, offLo
+    mov dword ptr [eax], ecx
+    mov ecx, offHi
+    mov dword ptr [eax + 4], ecx
+    mov ecx, pcmBytes
+    mov dword ptr [eax + 8], ecx
+    mov ecx, audio
+    mov dword ptr [eax + 12], ecx
+    inc g_ctNumTracks
+    ret
+CtTrackAdd ENDP
 FlacAlloc       PROTO
 FlacFree        PROTO
 FlacStart       PROTO
@@ -3611,6 +3633,106 @@ ChdCdHunk PROC USES esi edi ebx offLo:DWORD, offHi:DWORD, cb:DWORD, isLzma:DWORD
     ret
 ChdCdHunk ENDP
 
+; Walk the CHD metadata chain for CHT2/CHTR entries: "TRACK:n TYPE:t ... FRAMES:f".
+; Tracks land in the shared table with byte ranges into the expanded 2352 image;
+; each track's stored frames pad to a multiple of four in CHD, so track starts do too.
+szChtFrames     db 'FRAMES:', 0
+szChtAudio      db 'TYPE:AUDIO', 0
+
+ChdCdTracks PROC USES esi edi ebx hIn:DWORD, pHdr:DWORD
+    LOCAL metaLo:DWORD
+    LOCAL metaHi:DWORD
+    LOCAL nextLo:DWORD
+    LOCAL nextHi:DWORD
+    LOCAL mlen:DWORD
+    LOCAL tag:DWORD
+    LOCAL pText:DWORD
+    LOCAL frames:DWORD
+    LOCAL curFrame:DWORD
+    LOCAL isAud:DWORD
+    LOCAL mhdr[16]:BYTE
+
+    mov ecx, pHdr
+    invoke BSwap32, dword ptr [ecx + 48]
+    mov metaHi, eax
+    mov ecx, pHdr
+    invoke BSwap32, dword ptr [ecx + 52]
+    mov metaLo, eax
+    mov curFrame, 0
+    mov ebx, 0                              ; guard against looping chains
+    .WHILE ebx < 256
+        mov eax, metaLo
+        or eax, metaHi
+        .BREAK .IF eax == 0
+        invoke FileReadAt, hIn, metaLo, metaHi, addr mhdr, 16
+        .BREAK .IF eax != 16
+        mov eax, dword ptr mhdr[0]
+        mov tag, eax
+        invoke BSwap32, dword ptr mhdr[4]
+        and eax, 0FFFFFFh
+        mov mlen, eax
+        invoke BSwap32, dword ptr mhdr[8]
+        mov nextHi, eax
+        invoke BSwap32, dword ptr mhdr[12]
+        mov nextLo, eax
+        mov eax, tag
+        .IF (eax == 32544843h || eax == 52544843h) && mlen != 0 && mlen < 512
+            ; "CHT2" / "CHTR"
+            mov eax, mlen
+            inc eax
+            invoke VfsAlloc, eax
+            mov pText, eax
+            .IF eax != 0
+                mov eax, metaLo
+                add eax, 16
+                mov ecx, metaHi
+                adc ecx, 0
+                invoke FileReadAt, hIn, eax, ecx, pText, mlen
+                .IF eax == mlen
+                    invoke FindKeyword, pText, mlen, offset szChtFrames
+                    .IF eax != 0
+                        invoke ParseUint, eax
+                        mov frames, eax
+                        invoke FindKeyword, pText, mlen, offset szChtAudio
+                        mov isAud, 0
+                        .IF eax != 0
+                            mov isAud, 1
+                        .ENDIF
+                        ; byte range in the subcode-stripped output
+                        mov eax, curFrame
+                        mov ecx, 2352
+                        mul ecx
+                        push edx
+                        push eax
+                        mov eax, frames
+                        mov ecx, 2352
+                        mul ecx
+                        mov ecx, eax                    ; pcm bytes (tracks < 4 GB)
+                        pop eax
+                        pop edx
+                        invoke CtTrackAdd, eax, edx, ecx, isAud
+                        ; the next track starts on a four-frame boundary
+                        mov eax, frames
+                        add eax, 3
+                        and eax, 0FFFFFFFCh
+                        add curFrame, eax
+                    .ENDIF
+                .ENDIF
+                invoke VfsFreeMem, pText
+            .ENDIF
+        .ENDIF
+        mov eax, nextLo
+        mov metaLo, eax
+        mov eax, nextHi
+        mov metaHi, eax
+        inc ebx
+    .ENDW
+    .IF g_ctNumTracks != 0
+        mov g_ctAudioSwap, 1                ; CHD audio frames are big-endian
+    .ENDIF
+    ret
+ChdCdTracks ENDP
+
 ChdExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
     LOCAL hIn:DWORD
     LOCAL hOut:DWORD
@@ -3960,6 +4082,9 @@ ChdExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
         .ENDIF
     .ENDIF
 
+    .IF isCd != 0
+        invoke ChdCdTracks, hIn, addr hdr
+    .ENDIF
     invoke CreateFileW, pszDst, GENERIC_READ or GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL
     .IF eax == INVALID_HANDLE_VALUE
         jmp done

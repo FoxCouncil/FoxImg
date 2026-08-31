@@ -588,6 +588,15 @@ UiOnNotify PROC USES esi edi pNMHDR:DWORD
         mov eax, TRUE                       ; refuse edits while a job owns the model
         ret
     .ELSEIF ecx == NM_DBLCLK
+        invoke UiSelectedNode
+        .IF eax != 0
+            mov ecx, [eax].NODE.nflags
+            .IF ecx & NF_CDA
+                invoke AudioToggle, eax
+                xor eax, eax
+                ret
+            .ENDIF
+        .ENDIF
         invoke AppCommand, IDM_OPENDIR
     .ELSEIF ecx == LVN_ITEMCHANGED
         mov eax, [esi].NMLISTVIEW.uNewState

@@ -12,6 +12,7 @@ includelib advapi32.lib
 includelib dwmapi.lib
 includelib uxtheme.lib
 includelib ntdll.lib
+includelib winmm.lib
 
 ; ---------------------------------------------------------------------------
 ; Macros
@@ -761,6 +762,7 @@ NF_HOST                 equ 4       ; data lives in a host file (pszHost)
 
 NF_MEM                  equ 8       ; data is a heap block (pszHost points at it) - UDF embedded files
 NF_UDFONLY              equ 16      ; over 4 GB: written to the UDF half only
+NF_CDA                  equ 32      ; CD audio track: raw PCM in the container's data file, served as WAV
 
 ; Extent list entry for multi-extent files (absolute block, bytes)
 EXTENT STRUCT
@@ -1136,6 +1138,54 @@ EXTERNDEF g_saveGzip:DWORD                      ; save target ends in .gz: worke
 ; Optical containers (container.asm): NRG, MDS/MDF, CCD/IMG, GDI, TOC, generic scan
 ; ---------------------------------------------------------------------------
 BSwap32             PROTO :DWORD                ; big-endian dword swap (container.asm)
+
+; ---------------------------------------------------------------------------
+; CD audio (audio.asm): track table filled by containers, WAV serving, playback
+; ---------------------------------------------------------------------------
+CT_MAXTRK           equ 99
+CtTrackAdd          PROTO :DWORD,:DWORD,:DWORD,:DWORD   ; offLo, offHi, pcmBytes, audio
+CdaCopyData         PROTO :DWORD,:DWORD                 ; pNode, hOut -> BOOL (WAV header + PCM)
+VfsAddCdTracks      PROTO :DWORD                        ; pRootNode
+AudioToggle         PROTO :DWORD                        ; pNode -> starts or stops playback
+AudioStop           PROTO
+AudioOnDone         PROTO :DWORD                        ; LPWAVEHDR from MM_WOM_DONE
+EXTERNDEF g_ctTracks:DWORD                              ; CT_MAXTRK entries: offLo, offHi, pcmBytes, audio
+EXTERNDEF g_ctNumTracks:DWORD
+EXTERNDEF g_ctAudioSwap:DWORD                           ; PCM stored big-endian (CHD)
+EXTERNDEF g_bAudioOnly:DWORD                            ; image has audio tracks but no filesystem
+
+MM_WOM_DONE         equ 3BDh
+CALLBACK_WINDOW     equ 10000h
+WAVE_MAPPER         equ -1
+WHDR_PREPARED       equ 2
+
+WAVEFORMATEX STRUCT 2
+    wFormatTag      WORD ?
+    nChannels       WORD ?
+    nSamplesPerSec  DWORD ?
+    nAvgBytesPerSec DWORD ?
+    nBlockAlign     WORD ?
+    wBitsPerSample  WORD ?
+    cbSize          WORD ?
+WAVEFORMATEX ENDS
+
+WAVEHDR STRUCT
+    lpData          DWORD ?
+    dwBufferLength  DWORD ?
+    dwBytesRecorded DWORD ?
+    dwUser          DWORD ?
+    dwFlags         DWORD ?
+    dwLoops         DWORD ?
+    lpNext          DWORD ?
+    reserved        DWORD ?
+WAVEHDR ENDS
+
+waveOutOpen         PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD
+waveOutClose        PROTO :DWORD
+waveOutReset        PROTO :DWORD
+waveOutPrepareHeader PROTO :DWORD,:DWORD,:DWORD
+waveOutUnprepareHeader PROTO :DWORD,:DWORD,:DWORD
+waveOutWrite        PROTO :DWORD,:DWORD,:DWORD
 CtResolve           PROTO :DWORD                ; pszPath -> TRUE when recognised (geometry + g_szBinPath set)
 CtResolveByScan     PROTO :DWORD                ; pszPath -> TRUE when an ISO 9660 descriptor was found inside
 CtReset             PROTO

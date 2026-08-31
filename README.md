@@ -20,6 +20,8 @@ The program is one small executable with no runtime dependencies.
 - Long operations run on a worker thread with a progress bar and a Cancel button.
 - Dark mode follows the Windows setting. The window scales per monitor (PerMonitorV2).
 - Preview pane shows text files and every frame of an .ico file.
+- CD audio tracks appear as TrackNN.wav files: extract them as real WAVs, or
+  double-click one to play it. Audio-only discs open too (CUE, MDS, CHD).
 
 ## Format support
 
@@ -65,6 +67,9 @@ The program is one small executable with no runtime dependencies.
 | Unknown containers | any | Yes | No | Signature scan finds an ISO 9660 volume at any offset |
 
 Read-only formats convert on save: open the image, then save it as ISO, BIN/CUE, or gzip ISO.
+
+CD audio tracks (from cue sheets, Alcohol images and CHDs) show up as `TrackNN.wav`
+pseudo-files: extraction writes real WAV files, and a double-click plays the track.
 
 ## Compression
 

@@ -661,6 +661,11 @@ ParseCommandLine ENDP
 ; ---------------------------------------------------------------------------
 WndProc PROC hWnd:DWORD, uMsg:DWORD, wParam:DWORD, lParam:DWORD
     mov eax, uMsg
+    .IF eax == MM_WOM_DONE
+        invoke AudioOnDone, lParam
+        xor eax, eax
+        ret
+    .ENDIF
     .IF eax == WM_CREATE
         invoke UiCreateControls, hWnd
         invoke JobInit, hWnd

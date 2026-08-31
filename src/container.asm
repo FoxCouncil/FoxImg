@@ -36,6 +36,7 @@ szMEDIA         db 'MEDIA DESCRIPTOR'
 szKwDatafile    db 'DATAFILE', 0
 szKwFile        db 'FILE', 0
 szKwTrack       db 'TRACK', 0
+szKwIndex       db 'INDEX', 0
 szKwM12048      db 'MODE1/2048', 0
 szKwM12352      db 'MODE1/2352', 0
 szKwM22352      db 'MODE2/2352', 0
@@ -46,6 +47,7 @@ szKwFormMix     db 'FORM_MIX', 0
 .code
 
 CtIsRawAt PROTO :DWORD,:DWORD,:DWORD
+CtCueTracks PROTO :DWORD,:DWORD,:DWORD
 
 BSwap32 PROC val:DWORD
     mov eax, val
@@ -192,12 +194,144 @@ CtOpenCue PROC USES esi pszPath:DWORD
     mov ok, eax
     .IF eax != 0
         mov g_bCue, TRUE
+        invoke CtCueTracks, pText, cb, addr szData
     .ENDIF
 done:
     invoke VfsFreeMem, pText
     mov eax, ok
     ret
 CtOpenCue ENDP
+
+; All TRACK entries with their INDEX 01 positions; a cue sheet holding audio
+; lays the file out in uniform 2352-byte sectors
+CtCueTracks PROC USES esi edi ebx pText:DWORD, cb:DWORD, pszData:DWORD
+    LOCAL lbas[CT_MAXTRK]:DWORD
+    LOCAL auds[CT_MAXTRK]:DWORD
+    LOCAL nTrk:DWORD
+    LOCAL anyAudio:DWORD
+    LOCAL hFile:DWORD
+    LOCAL szLo:DWORD
+    LOCAL szHi:DWORD
+    LOCAL totalSecs:DWORD
+    LOCAL i:DWORD
+    mov nTrk, 0
+    mov anyAudio, 0
+    mov esi, pText
+    mov ebx, cb
+    .WHILE ebx > 8 && nTrk < CT_MAXTRK
+        push ebx
+        invoke FindKeyword, esi, ebx, offset szKwTrack
+        pop ebx
+        .BREAK .IF eax == 0
+        mov ecx, eax
+        sub ecx, esi
+        sub ebx, ecx
+        mov esi, eax
+        ; mode word on the same line: AUDIO or MODEx
+        mov eax, nTrk
+        mov dword ptr auds[eax * 4], 0
+        mov edi, esi
+        .WHILE byte ptr [edi] != 0 && byte ptr [edi] != 10
+            .IF byte ptr [edi] == 'A' && byte ptr [edi + 1] == 'U' && byte ptr [edi + 2] == 'D'
+                mov eax, nTrk
+                mov dword ptr auds[eax * 4], 1
+                mov anyAudio, 1
+                .BREAK
+            .ENDIF
+            inc edi
+        .ENDW
+        push ebx
+        invoke FindKeyword, esi, ebx, offset szKwIndex
+        pop ebx
+        .BREAK .IF eax == 0
+        mov ecx, eax
+        sub ecx, esi
+        sub ebx, ecx
+        mov esi, eax
+        invoke ParseUint, esi               ; index number
+        mov esi, edx
+        .IF eax != 1
+            ; index 00 pregap: the next INDEX belongs to the same track
+            push ebx
+            invoke FindKeyword, esi, ebx, offset szKwIndex
+            pop ebx
+            .BREAK .IF eax == 0
+            mov ecx, eax
+            sub ecx, esi
+            sub ebx, ecx
+            mov esi, eax
+            invoke ParseUint, esi
+            mov esi, edx
+        .ENDIF
+        invoke ParseUint, esi               ; minutes
+        mov esi, edx
+        inc esi                             ; the colon
+        mov ecx, 4500
+        mul ecx
+        mov edi, eax
+        invoke ParseUint, esi               ; seconds
+        mov esi, edx
+        inc esi
+        mov ecx, 75
+        mul ecx
+        add edi, eax
+        invoke ParseUint, esi               ; frames
+        mov esi, edx
+        add edi, eax
+        mov eax, nTrk
+        mov dword ptr lbas[eax * 4], edi
+        inc nTrk
+    .ENDW
+    .IF anyAudio == 0 || nTrk == 0
+        ret
+    .ENDIF
+    invoke CreateFileW, pszData, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
+    .IF eax == INVALID_HANDLE_VALUE
+        ret
+    .ENDIF
+    mov hFile, eax
+    invoke FileSize64, hFile, addr szLo, addr szHi
+    invoke CloseHandle, hFile
+    mov eax, szLo
+    mov edx, szHi
+    mov ecx, 2352
+    div ecx
+    mov totalSecs, eax
+    mov i, 0
+    .WHILE TRUE
+        mov eax, i
+        .BREAK .IF eax >= nTrk
+        mov ecx, dword ptr lbas[eax * 4]
+        inc eax
+        .IF eax < nTrk
+            mov edx, dword ptr lbas[eax * 4]
+        .ELSE
+            mov edx, totalSecs
+        .ENDIF
+        sub edx, ecx                        ; sectors in this track
+        .IF edx & 80000000h
+            .BREAK
+        .ENDIF
+        mov eax, edx
+        mov edx, 2352
+        push ecx
+        mul edx
+        mov ebx, eax                        ; pcm bytes
+        pop ecx
+        mov eax, ecx
+        mov ecx, 2352
+        mul ecx                             ; byte offset in edx:eax
+        push edx
+        push eax
+        mov eax, i
+        mov ecx, dword ptr auds[eax * 4]
+        pop eax
+        pop edx
+        invoke CtTrackAdd, eax, edx, ebx, ecx
+        inc i
+    .ENDW
+    ret
+CtCueTracks ENDP
 
 ; ---------------------------------------------------------------------------
 ; NRG (Nero): chunk list at the end of the file, pointed to by a NERO (v1) or NER5 (v2) footer
@@ -405,17 +539,36 @@ CtOpenMds PROC USES esi edi ebx pszPath:DWORD
         movzx eax, byte ptr trk[4]          ; point
         .IF eax < 0A0h && eax != 0
             movzx eax, byte ptr trk[0]      ; mode: A9 audio, AA mode1, AB mode2, AC/AD mode2 forms, EC DVD
-            .IF eax != 0A9h && eax != 0
+            .IF eax == 0A9h
+                ; audio track: 2352-byte sectors straight from the .mdf;
+                ; the length in sectors sits in the extra block this entry points to
                 movzx eax, word ptr trk[16]
-                mov secSize, eax
-                mov eax, dword ptr trk[36]
-                mov lba, eax
-                mov eax, dword ptr trk[40]
-                mov baseLo, eax
-                mov eax, dword ptr trk[44]
-                mov baseHi, eax
-                mov ok, TRUE
-                .BREAK
+                .IF eax == 2352
+                    invoke FileReadAt, hFile, dword ptr trk[12], 0, addr sess, 8
+                    .IF eax == 8
+                        mov eax, dword ptr sess[4]
+                        .IF eax != 0
+                            push ebx
+                            mov ecx, 2352
+                            mul ecx
+                            mov ebx, eax
+                            invoke CtTrackAdd, dword ptr trk[40], dword ptr trk[44], ebx, 1
+                            pop ebx
+                        .ENDIF
+                    .ENDIF
+                .ENDIF
+            .ELSEIF eax != 0
+                .IF ok == FALSE
+                    movzx eax, word ptr trk[16]
+                    mov secSize, eax
+                    mov eax, dword ptr trk[36]
+                    mov lba, eax
+                    mov eax, dword ptr trk[40]
+                    mov baseLo, eax
+                    mov eax, dword ptr trk[44]
+                    mov baseHi, eax
+                    mov ok, TRUE
+                .ENDIF
             .ENDIF
         .ENDIF
         add trkOff, 80
@@ -1394,6 +1547,8 @@ CtOpenVia ENDP
 ; Entry points
 ; ---------------------------------------------------------------------------
 CtReset PROC
+    mov g_ctNumTracks, 0
+    mov g_ctAudioSwap, 0
     mov g_ctBaseLo, 0
     mov g_ctBaseHi, 0
     mov g_ctSecSize, 0
