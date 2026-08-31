@@ -1770,6 +1770,270 @@ Lz4Block PROC USES esi edi ebx inLen:DWORD
 Lz4Block ENDP
 
 ; ---------------------------------------------------------------------------
+; LZO1X block (JISO method 0). Opcode ranges per the kernel's lzo.rst: literal
+; runs and matches carry a 2-bit state of trailing literals that disambiguates
+; the 0..15 opcodes; the stream ends on the 16..31 opcode with distance 16384.
+; ---------------------------------------------------------------------------
+LzoBlock PROC USES esi edi ebx inLen:DWORD
+    LOCAL consumed:DWORD
+    LOCAL lstate:DWORD
+    LOCAL tv:DWORD
+    LOCAL mlen:DWORD
+    LOCAL dist:DWORD
+    LOCAL haveOp:DWORD
+    mov consumed, 0
+    mov lstate, 0
+    mov haveOp, 0
+    invoke ZfInByte
+    inc consumed
+    .IF eax > 17
+        sub eax, 17
+        mov ebx, eax                        ; leading literal run
+        .IF eax < 4
+            mov lstate, eax
+        .ELSE
+            mov lstate, 4
+        .ENDIF
+        add consumed, ebx
+        .WHILE ebx != 0 && g_zfErr == 0
+            invoke ZfInByte
+            invoke ZfPutB, eax
+            dec ebx
+        .ENDW
+    .ELSEIF eax == 17
+        mov g_zfErr, 1                      ; version-1 bitstream marker
+        ret
+    .ELSE
+        mov tv, eax
+        mov haveOp, 1
+    .ENDIF
+    .WHILE g_zfErr == 0
+        mov eax, consumed
+        .IF eax > inLen
+            mov g_zfErr, 1                  ; ran past the block with no end marker
+            .BREAK
+        .ENDIF
+        .IF haveOp == 0
+            invoke ZfInByte
+            inc consumed
+            mov tv, eax
+        .ENDIF
+        mov haveOp, 0
+        mov eax, tv
+        .IF eax >= 128
+            ; 1 L L D D D S S: 5-8 bytes from up to 2 kB back
+            mov ecx, eax
+            shr ecx, 5
+            and ecx, 3
+            add ecx, 5
+            mov mlen, ecx
+            mov ecx, eax
+            shr ecx, 2
+            and ecx, 7
+            mov ebx, ecx
+            invoke ZfInByte
+            inc consumed
+            shl eax, 3
+            add eax, ebx
+            inc eax
+            mov dist, eax
+        .ELSEIF eax >= 64
+            ; 0 1 L D D D S S: 3-4 bytes from up to 2 kB back
+            mov ecx, eax
+            shr ecx, 5
+            and ecx, 1
+            add ecx, 3
+            mov mlen, ecx
+            mov ecx, eax
+            shr ecx, 2
+            and ecx, 7
+            mov ebx, ecx
+            invoke ZfInByte
+            inc consumed
+            shl eax, 3
+            add eax, ebx
+            inc eax
+            mov dist, eax
+        .ELSEIF eax >= 32
+            ; 0 0 1 L L L L L: within 16 kB, LE16 distance+state
+            and eax, 31
+            .IF eax == 0
+                mov eax, 31
+                .WHILE g_zfErr == 0
+                    push eax
+                    invoke ZfInByte
+                    inc consumed
+                    mov ecx, eax
+                    pop eax
+                    .IF ecx == 0
+                        add eax, 255
+                    .ELSE
+                        add eax, ecx
+                        .BREAK
+                    .ENDIF
+                .ENDW
+            .ENDIF
+            add eax, 2
+            mov mlen, eax
+            invoke ZfInByte
+            inc consumed
+            mov ebx, eax
+            invoke ZfInByte
+            inc consumed
+            shl eax, 8
+            or ebx, eax                     ; LE16: D D D D D D D D | D D D D D D S S
+            mov eax, ebx
+            and eax, 3
+            mov lstate, eax
+            mov eax, ebx
+            shr eax, 2
+            inc eax
+            mov dist, eax
+        .ELSEIF eax >= 16
+            ; 0 0 0 1 H L L L: 16..48 kB back, or the end marker
+            mov ebx, eax
+            and eax, 7
+            .IF eax == 0
+                mov eax, 7
+                .WHILE g_zfErr == 0
+                    push eax
+                    invoke ZfInByte
+                    inc consumed
+                    mov ecx, eax
+                    pop eax
+                    .IF ecx == 0
+                        add eax, 255
+                    .ELSE
+                        add eax, ecx
+                        .BREAK
+                    .ENDIF
+                .ENDW
+            .ENDIF
+            add eax, 2
+            mov mlen, eax
+            mov eax, ebx
+            and eax, 8
+            shl eax, 11                     ; H << 14
+            mov ebx, eax
+            invoke ZfInByte
+            inc consumed
+            push eax
+            invoke ZfInByte
+            inc consumed
+            mov ecx, eax
+            pop eax
+            shl ecx, 8
+            or eax, ecx
+            mov ecx, eax
+            and ecx, 3
+            mov lstate, ecx
+            shr eax, 2
+            add eax, ebx
+            add eax, 16384
+            mov dist, eax
+            .IF eax == 16384
+                xor eax, eax                ; end of stream
+                ret
+            .ENDIF
+        .ELSE
+            ; 0..15: meaning depends on the pending state
+            .IF lstate == 0
+                ; long literal run
+                .IF eax == 0
+                    mov eax, 15
+                    .WHILE g_zfErr == 0
+                        push eax
+                        invoke ZfInByte
+                        inc consumed
+                        mov ecx, eax
+                        pop eax
+                        .IF ecx == 0
+                            add eax, 255
+                        .ELSE
+                            add eax, ecx
+                            .BREAK
+                        .ENDIF
+                    .ENDW
+                .ENDIF
+                add eax, 3
+                mov ebx, eax
+                add consumed, eax
+                .WHILE ebx != 0 && g_zfErr == 0
+                    invoke ZfInByte
+                    invoke ZfPutB, eax
+                    dec ebx
+                .ENDW
+                mov lstate, 4
+                .CONTINUE
+            .ELSEIF lstate == 4
+                ; 3 bytes from 2..3 kB back
+                mov mlen, 3
+                mov ecx, eax
+                shr ecx, 2
+                and ecx, 3
+                mov ebx, ecx
+                mov ecx, eax
+                and ecx, 3
+                mov lstate, ecx
+                invoke ZfInByte
+                inc consumed
+                shl eax, 2
+                add eax, ebx
+                add eax, 2049
+                mov dist, eax
+            .ELSE
+                ; 2 bytes from up to 1 kB back
+                mov mlen, 2
+                mov ecx, eax
+                shr ecx, 2
+                and ecx, 3
+                mov ebx, ecx
+                mov ecx, eax
+                and ecx, 3
+                mov lstate, ecx
+                invoke ZfInByte
+                inc consumed
+                shl eax, 2
+                add eax, ebx
+                inc eax
+                mov dist, eax
+            .ENDIF
+        .ENDIF
+        ; every path reaching here (the literal run used .CONTINUE) has a match to copy
+        .WHILE mlen != 0 && g_zfErr == 0
+            .IF g_zfOutPos >= ZF_OUTBUF
+                invoke ZfOutFlush
+            .ENDIF
+            mov eax, dist
+            .IF eax > g_zfOutPos
+                mov g_zfErr, 1
+                .BREAK
+            .ENDIF
+            mov ecx, mlen
+            .IF ecx > 512
+                mov ecx, 512
+            .ENDIF
+            sub mlen, ecx
+            mov edi, g_zfOut
+            add edi, g_zfOutPos
+            mov esi, edi
+            sub esi, dist
+            add g_zfOutPos, ecx
+            rep movsb
+        .ENDW
+        ; trailing literals for the next opcode
+        mov ebx, lstate
+        add consumed, ebx
+        .WHILE ebx != 0 && g_zfErr == 0
+            invoke ZfInByte
+            invoke ZfPutB, eax
+            dec ebx
+        .ENDW
+    .ENDW
+    ret
+LzoBlock ENDP
+
+; ---------------------------------------------------------------------------
 ; GCZ (Dolphin): 32-byte header, 64-bit block pointers (bit 63 = stored raw),
 ; Adler hashes (skipped), one zlib stream per block
 ; ---------------------------------------------------------------------------
@@ -2089,6 +2353,7 @@ JsoExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
     LOCAL hdr[48]:BYTE
     LOCAL blkSize:DWORD
     LOCAL bhBytes:DWORD
+    LOCAL method:DWORD
     LOCAL totCb:DWORD
     LOCAL nBlk:DWORD
     LOCAL pIdx:DWORD
@@ -2114,7 +2379,8 @@ JsoExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
         jmp done
     .ENDIF
     movzx eax, byte ptr hdr[10]
-    .IF eax != 1                            ; 1 = deflate; 0 = LZO, unsupported
+    mov method, eax                         ; 0 = LZO, 1 = deflate
+    .IF eax > 1
         jmp done
     .ENDIF
     movzx eax, word ptr hdr[6]
@@ -2182,6 +2448,8 @@ JsoExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
         mov eax, csize
         .IF eax >= blkSize                  ; stored block
             invoke ZfRawCopy, thisCb
+        .ELSEIF method == 0
+            invoke LzoBlock, csize
         .ELSE
             invoke ZfSmartInflate
         .ENDIF

@@ -46,7 +46,7 @@ The program is one small executable with no runtime dependencies.
 | CSO / CISO | .cso .ciso | Yes | No | v0/v1/v2; deflate and LZ4 blocks (PSP, Dreamcast tooling) |
 | ZSO | .zso | Yes | No | CISO layout with LZ4 blocks |
 | DAX | .dax | Yes | No | PSP: zlib frames and raw NC areas |
-| JSO | .jso | Yes | No | PSP: deflate method; the rare LZO method is declined |
+| JSO | .jso | Yes | No | PSP: deflate and LZO methods |
 | PBP | .pbp | Planned | No | PSP EBOOT with the ISO inside DATA.PSAR |
 | CHD | .chd | Planned | No | MAME: zlib / LZMA / FLAC hunks |
 | GCZ | .gcz | Yes | No | Dolphin: zlib blocks, stored blocks |
@@ -82,6 +82,7 @@ and then open like any other image, the same way ECM does.
 | zstd | Planned | RVZ |
 | LZ4 | Yes | ZSO, CISO v2 |
 | FLAC | Planned | CHD audio tracks |
+| LZO1X | Yes | JSO method 0 |
 
 ## Download
 
