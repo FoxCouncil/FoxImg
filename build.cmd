@@ -13,9 +13,7 @@ call "%VSPATH%\Common7\Tools\VsDevCmd.bat" -arch=x86 -host_arch=x64 -no_logo >nu
 if errorlevel 1 exit /b 1
 
 set MLFLAGS=/nologo /c /coff /W3 /safeseh /Isrc
-rem /FIXED drops the relocation table (5.6 KB), which is what keeps the exe under 100 KB;
-rem the cost is that Windows loads it at a fixed base, without ASLR.
-set LINKFLAGS=/nologo /SUBSYSTEM:WINDOWS /OPT:REF /OPT:ICF /RELEASE /MERGE:.rdata=.text /FIXED
+set LINKFLAGS=/nologo /SUBSYSTEM:WINDOWS /OPT:REF /OPT:ICF /RELEASE /MERGE:.rdata=.text
 if /i "%1"=="debug" (
     set MLFLAGS=%MLFLAGS% /Zi
     set LINKFLAGS=%LINKFLAGS% /DEBUG
