@@ -8,7 +8,6 @@ INFOTABLE_MAX   equ 16 * 1024 * 1024
 g_bootCount     dd 0
 g_bootWCatalog  dd 0
 g_bootEntries   BOOTENTRY BOOT_MAX dup(<>)
-g_bootIdString  db 24 dup(0)
 szElTorito      db 'EL TORITO SPECIFICATION', 0
 
 WSTR szNotBootable, <Not bootable>
@@ -24,6 +23,9 @@ szEntryFmt      dw '%','s',' ','(','%','s',')',0
 WSTR szIsolinux, <isolinux.bin>
 WSTR szEltoritoImg, <eltorito.img>
 WSTR szEltoritoBin, <eltorito.bin>
+
+.data?
+g_bootIdString  db 24 dup(?)
 
 .code
 

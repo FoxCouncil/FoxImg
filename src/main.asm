@@ -39,18 +39,7 @@ WSTR szTmpSuffix, <.tmp>
 WSTR szNewFolderName, <New Folder>
 WSTR szNewFileName, <New File>
 
-szFilterOpen LABEL WORD
-    dw 'D','i','s','c',' ','I','m','a','g','e','s',0
-    dw '*','.','i','s','o',';','*','.','i','m','g',';','*','.','b','i','n',';','*','.','c','u','e',';'
-    dw '*','.','n','r','g',';','*','.','m','d','s',';','*','.','c','c','d',';','*','.','g','d','i',';','*','.','t','o','c',';','*','.','c','d','i',';'
-    dw '*','.','e','c','m',';','*','.','g','z',';','*','.','z','i','p',';','*','.','c','s','o',';','*','.','c','i','s','o',';'
-    dw '*','.','g','c','z',';','*','.','d','a','x',';','*','.','g','c','m',';'
-    dw '*','.','z','s','o',';','*','.','j','s','o',';','*','.','i','s','z',';','*','.','d','a','a',';'
-    dw '*','.','b','5','t',';','*','.','b','6','t',';','*','.','c','2','d',';','*','.','m','d','x',';','*','.','c','h','d',';'
-    dw '*','.','u','i','f',';','*','.','d','m','g',';','*','.','p','b','p',';','*','.','b','z','2',';','*','.','r','v','z',0
-    dw 'A','l','l',' ','F','i','l','e','s',' ','(','*','.','*',')',0
-    dw '*','.','*',0
-    dw 0
+WSTR szDiscImages, <Disc Images>
 szFilterSave LABEL WORD
     dw 'I','S','O',' ','I','m','a','g','e',' ','(','*','.','i','s','o',')',0
     dw '*','.','i','s','o',0
@@ -76,6 +65,7 @@ g_szMulti   dw MULTI_BUF dup(?)
 g_saveData  dw MAX_PATH dup(?)
 g_saveCue   dw MAX_PATH dup(?)
 g_saveTmp   dw MAX_PATH + 8 dup(?)
+g_szFilter  dw 512 dup(?)
 
 .code
 
@@ -322,7 +312,8 @@ CmdOpen PROC
     mov ofn.lStructSize, sizeof OPENFILENAMEW
     push g_hWnd
     pop ofn.hwndOwner
-    mov ofn.lpstrFilter, offset szFilterOpen
+    invoke CtBuildOpenFilter, offset g_szFilter, offset szDiscImages, offset szFilterAll
+    mov ofn.lpstrFilter, offset g_szFilter
     mov ofn.nFilterIndex, 1
     lea eax, szFile
     mov ofn.lpstrFile, eax

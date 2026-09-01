@@ -60,6 +60,10 @@ g_zfFixLLut     dw 512 dup(?)           ; and the fixed pair, built once
 g_zfFixDLut     dw 512 dup(?)
 g_ctTracks      dd CT_MAXTRK * 4 dup(?)
 
+.data?
+g_chLens        db 16 dup(?)
+g_chCodes       dw 16 dup(?)
+
 .code
 
 ZfSmartInflate  PROTO
@@ -3410,8 +3414,6 @@ szChdMagic      db 'MComprHD'
 g_chBitsPtr     dd 0                    ; map bitstream, MSB first
 g_chBitPos      dd 0
 g_chBitMax      dd 0
-g_chLens        db 16 dup(0)
-g_chCodes       dw 16 dup(0)
 
 .code
 

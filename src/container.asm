@@ -44,6 +44,15 @@ szKwM22336      db 'MODE2/2336', 0
 szKwRaw         db '_RAW', 0
 szKwFormMix     db 'FORM_MIX', 0
 
+; every extension the Open dialog offers, in the order shown
+g_ctExtList     dd offset szExtIso, offset szExtImg, offset szExtBin, offset szExtCue, offset szExtNrg, offset szExtMds
+                dd offset szExtMdf, offset szExtCcd, offset szExtGdi, offset szExtToc, offset szExtCdi, offset szExtEcm
+                dd offset szExtGz, offset szExtZip, offset szExtCso, offset szExtCiso, offset szExtChd, offset szExtUif
+                dd offset szExtDmg, offset szExtPbp, offset szExtBz2, offset szExtRvz, offset szExtGcz, offset szExtDax
+                dd offset szExtZso, offset szExtJso, offset szExtIsz, offset szExtDaa, offset szExtB5t, offset szExtB6t
+                dd offset szExtC2d, offset szExtMdx, offset szExtGcm
+                dd 0
+
 .code
 
 CtIsRawAt PROTO :DWORD,:DWORD,:DWORD
@@ -1120,6 +1129,9 @@ WSTR szCtBz2, <bzip2>
 WSTR szExtBz2, <.bz2>
 WSTR szCtRvz, <RVZ>
 WSTR szExtRvz, <.rvz>
+WSTR szExtIso, <.iso>
+WSTR szExtBin, <.bin>
+WSTR szExtGcm, <.gcm>
 WSTR szExtGcz, <.gcz>
 WSTR szExtDax, <.dax>
 WSTR szExtZso, <.zso>
@@ -1535,6 +1547,41 @@ g_ctExpTable    dd offset szExtGz,   offset GzExpandFile,  offset szCtGz,  0
                 dd 0
 
 .code
+
+; The Open dialog's filter, built from g_ctExtList so the list lives once:
+; "Disc Images" NUL "*.iso;*.img;..." NUL then the caller's "All Files" pair.
+CtBuildOpenFilter PROC USES esi edi ebx pDst:DWORD, pszLabel:DWORD, pszAllFiles:DWORD
+    mov edi, pDst
+    mov esi, pszLabel
+    .REPEAT
+        lodsw
+        stosw
+    .UNTIL ax == 0
+    mov ebx, offset g_ctExtList
+    .WHILE dword ptr [ebx] != 0
+        mov ax, '*'
+        stosw
+        mov esi, dword ptr [ebx]
+        .WHILE word ptr [esi] != 0
+            lodsw
+            stosw
+        .ENDW
+        mov ax, ';'
+        stosw
+        add ebx, 4
+    .ENDW
+    mov word ptr [edi - 2], 0           ; the last ';' becomes the terminator
+    mov esi, pszAllFiles                ; "All Files (*.*)" NUL "*.*" NUL NUL
+    mov ecx, 3
+    .REPEAT
+        lodsw
+        stosw
+        .IF ax == 0
+            dec ecx
+        .ENDIF
+    .UNTIL ecx == 0
+    ret
+CtBuildOpenFilter ENDP
 
 ; Expand through %TEMP% with the given expander, then open the result
 CtOpenVia PROC pszPath:DWORD, pfnExpand:DWORD, pszName:DWORD, secSize:DWORD

@@ -1215,6 +1215,7 @@ waveOutReset        PROTO :DWORD
 waveOutPrepareHeader PROTO :DWORD,:DWORD,:DWORD
 waveOutUnprepareHeader PROTO :DWORD,:DWORD,:DWORD
 waveOutWrite        PROTO :DWORD,:DWORD,:DWORD
+CtBuildOpenFilter   PROTO :DWORD,:DWORD,:DWORD  ; pDst, "Disc Images", the All Files pair -> filter string
 CtResolve           PROTO :DWORD                ; pszPath -> TRUE when recognised (geometry + g_szBinPath set)
 CtResolveByScan     PROTO :DWORD                ; pszPath -> TRUE when an ISO 9660 descriptor was found inside
 CtReset             PROTO

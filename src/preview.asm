@@ -15,9 +15,6 @@ g_hFontMono     dd 0
 g_hbrPreview    dd 0
 g_brDark        dd -1           ; g_bDark value the brush was made for
 g_nIcons        dd 0
-g_hIcons        dd MAX_ICONS dup(0)
-g_iconCx        dd MAX_ICONS dup(0)
-g_iconCy        dd MAX_ICONS dup(0)
 
 WSTR szEditClass, <EDIT>
 WSTR szIconClass, <FoxImgIconView>
@@ -25,6 +22,11 @@ WSTR szConsolas, <Consolas>
 WSTR szNoPreview, <No preview available for this file.>
 WSTR szEmptyFile, <(empty file)>
 WSTR szExtIco, <.ico>
+
+.data?
+g_hIcons        dd MAX_ICONS dup(?)
+g_iconCx        dd MAX_ICONS dup(?)
+g_iconCy        dd MAX_ICONS dup(?)
 
 .code
 

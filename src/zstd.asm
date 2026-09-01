@@ -33,13 +33,13 @@ FSE_TBL         equ 2056
 
 .data
 ; literal length codes: baseline and extra bits (RFC 8878 3.1.1.3.2.1.1)
-g_zsLLBase      dd 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,18
-                dd 20,22,24,28,32,40,48,64,128,256,512,1024,2048,4096,8192,16384,32768,65536
+g_zsLLBase      dw 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,18
+                dw 20,22,24,28,32,40,48,64,128,256,512,1024,2048,4096,8192,16384,32768,0    ; code 35 is 65536: the 17th bit is added in code
 g_zsLLExtra     db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1
                 db 1,1,2,2,3,3,4,6,7,8,9,10,11,12,13,14,15,16
 ; match length codes
-g_zsMLBase      dd 3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28
-                dd 29,30,31,32,33,34,35,37,39,41,43,47,51,59,67,83,99,131,259,515,1027,2051,4099,8195,16387,32771,65539
+g_zsMLBase      dw 3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28
+                dw 29,30,31,32,33,34,35,37,39,41,43,47,51,59,67,83,99,131,259,515,1027,2051,4099,8195,16387,32771,3    ; code 52 is 65539
 g_zsMLExtra     db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
                 db 0,0,0,0,0,0,1,1,1,1,2,2,3,3,4,4,5,7,8,9,10,11,12,13,14,15,16
 ; predefined distributions (signed; -1 is "less than one")
@@ -96,17 +96,6 @@ ZsSeqTable      PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD
 ; ---------------------------------------------------------------------------
 ; Small helpers
 ; ---------------------------------------------------------------------------
-; index of the highest set bit, -1 for zero
-ZsHighBit PROC v:DWORD
-    mov eax, v
-    .IF eax == 0
-        mov eax, -1
-        ret
-    .ENDIF
-    bsr eax, eax
-    ret
-ZsHighBit ENDP
-
 ; n bits (0-32) little-endian from an arbitrary bit offset into a buffer
 ZsReadLE PROC USES esi ebx pSrc:DWORD, nBits:DWORD, bitOff:DWORD
     LOCAL res:DWORD
@@ -324,7 +313,7 @@ ZsFseBuild PROC USES esi edi ebx pTbl:DWORD, pFreq:DWORD, nSym:DWORD, accLog:DWO
         movzx eax, word ptr g_zsDesc[ebx * 2]
         inc word ptr g_zsDesc[ebx * 2]
         push eax
-        invoke ZsHighBit, eax
+        bsr eax, eax
         mov ecx, accLog
         sub ecx, eax                    ; accuracy log - highest bit of the counter
         pop eax
@@ -371,7 +360,7 @@ ZsFseHeader PROC USES esi edi ebx pTbl:DWORD, maxLog:DWORD
         mov eax, remaining
         .BREAK .IF nSym >= 256
         inc eax
-        invoke ZsHighBit, eax
+        bsr eax, eax
         inc eax
         mov bits, eax
         invoke ZsFBits, bits
@@ -485,7 +474,7 @@ ZsHufBuild PROC USES esi edi ebx nSym:DWORD
         .ENDIF
         inc i
     .ENDW
-    invoke ZsHighBit, sum
+    bsr eax, sum
     inc eax
     mov maxBits, eax
     .IF eax > ZS_HUF_MAXBITS || sum == 0
@@ -506,7 +495,7 @@ ZsHufBuild PROC USES esi edi ebx nSym:DWORD
         xor eax, eax
         ret
     .ENDIF
-    invoke ZsHighBit, leftOver
+    bsr eax, leftOver
     inc eax
     mov lastW, eax
     ; bits per symbol, the last one inferred
@@ -678,7 +667,7 @@ ZsHufTable PROC USES esi edi ebx
         mov ecx, eax
         movzx eax, byte ptr [esi + ecx - 1]
         push ecx
-        invoke ZsHighBit, eax
+        bsr eax, eax
         pop ecx
         mov edx, 8
         sub edx, eax                    ; padding: bits above the marker
@@ -764,7 +753,7 @@ ZsHufStream PROC USES esi edi ebx pSrc:DWORD, cb:DWORD, pDst:DWORD
         xor eax, eax
         ret
     .ENDIF
-    invoke ZsHighBit, eax
+    bsr eax, eax
     mov edx, 8
     sub edx, eax
     mov ecx, cb
@@ -1169,7 +1158,7 @@ ZsSequences PROC USES esi edi ebx
         ret
     .ENDIF
     push ecx
-    invoke ZsHighBit, eax
+    bsr eax, eax
     pop ecx
     mov edx, 8
     sub edx, eax
@@ -1210,13 +1199,21 @@ ZsSequences PROC USES esi edi ebx
         movzx eax, byte ptr g_zsMLExtra[ecx]
         invoke ZsBBits, eax
         mov ecx, mlCode
-        add eax, dword ptr g_zsMLBase[ecx * 4]
+        movzx edx, word ptr g_zsMLBase[ecx * 2]
+        add eax, edx
+        .IF ecx == 52
+            add eax, 10000h
+        .ENDIF
         mov mlen, eax
         mov ecx, llCode
         movzx eax, byte ptr g_zsLLExtra[ecx]
         invoke ZsBBits, eax
         mov ecx, llCode
-        add eax, dword ptr g_zsLLBase[ecx * 4]
+        movzx edx, word ptr g_zsLLBase[ecx * 2]
+        add eax, edx
+        .IF ecx == 35
+            add eax, 10000h
+        .ENDIF
         mov llen, eax
         ; state updates, skipped after the last sequence: LL, ML, OF
         mov eax, i
