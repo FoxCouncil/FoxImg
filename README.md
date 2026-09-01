@@ -54,7 +54,7 @@ The program is one small executable with no runtime dependencies.
 | PBP | .pbp | Yes | No | PS1 Classics EBOOT (PSISOIMG); multi-disc takes disc 1; encrypted PSP UMD declined |
 | CHD | .chd | Yes | No | v5: zlib, LZMA, FLAC, all CD codecs, stored and self hunks; parented CHDs declined |
 | GCZ | .gcz | Yes | No | Dolphin: zlib blocks, stored blocks |
-| WIA / RVZ | .wia .rvz | Planned | No | Dolphin: zstd / bzip2 / LZMA |
+| RVZ | .rvz | Yes | No | Dolphin, GameCube discs: Zstandard groups and packed junk; Wii (encrypted partitions) and WIA declined |
 | WBFS | .wbfs | Planned | No | Wii backup file system |
 | GCM | .gcm .iso | Yes | No | Big-endian FST reader; files need no block alignment |
 | NKit | .nkit.iso | Planned | No | Wii / GameCube |
@@ -87,9 +87,9 @@ chunk by chunk - an ISZ may hold zlib and bzip2 blocks in one image.
 | --- | --- | --- |
 | DEFLATE (inflate) | Yes | .gz, .zip, .cso, .gcz, .dax, .jso, .isz, .pbp (raw and zlib framing, auto-detected) |
 | DEFLATE (compress) | Yes | Save As gzip ISO (fixed Huffman, 32 KB window) |
-| LZMA | Yes | CHD hunks; DAA v0x110 and RVZ later |
-| bzip2 | Yes | .bz2, ISZ and DMG chunks; later RVZ |
-| zstd | Planned | RVZ |
+| LZMA | Yes | CHD hunks; DAA v0x110 and LZMA-compressed RVZ later |
+| bzip2 | Yes | .bz2, ISZ and DMG chunks; bzip2-compressed RVZ later |
+| Zstandard | Yes | RVZ groups and tables |
 | LZ4 | Yes | ZSO, CISO v2 |
 | FLAC | Yes | CHD cdfl and flac hunks (16-bit stereo) |
 | LZO1X | Yes | JSO method 0 |
@@ -104,7 +104,7 @@ executable directly:
 https://github.com/FoxCouncil/FoxImg/releases/latest/download/FoxImg.exe
 ```
 
-There is nothing to install. The program is a single .exe under 100 KB.
+There is nothing to install. The program is a single .exe of about 110 KB.
 
 ## Build
 

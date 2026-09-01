@@ -357,6 +357,7 @@ MessageBoxW         PROTO :DWORD,:DWORD,:DWORD,:DWORD
 MessageBoxA         PROTO :DWORD,:DWORD,:DWORD,:DWORD
 SetWindowTextW      PROTO :DWORD,:DWORD
 wsprintfW           PROTO C :VARARG
+wsprintfA           PROTO C :VARARG
 
 GetStockObject      PROTO :DWORD
 InitCommonControlsEx PROTO :DWORD
@@ -811,6 +812,7 @@ ReadFile            PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD
 SetFilePointerEx    PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD
 SetFileInformationByHandle PROTO :DWORD,:DWORD,:DWORD,:DWORD
 SetEndOfFile        PROTO :DWORD
+AddVectoredExceptionHandler PROTO :DWORD,:DWORD
 CreateDirectoryW    PROTO :DWORD,:DWORD
 MoveFileExW         PROTO :DWORD,:DWORD,:DWORD
 DeleteFileW         PROTO :DWORD
@@ -1139,6 +1141,9 @@ UifExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, MagicIS
 DmgExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, Apple UDIF (zlib/raw/zero)
 PbpExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, PSP EBOOT holding a PS1 disc
 BzExpandFile        PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, whole-file bzip2 stream
+ZsDecode            PROTO :DWORD,:DWORD,:DWORD,:DWORD  ; pIn, cbIn, pOut, cbOutMax -> bytes produced, 0 on error
+EXTERNDEF g_zsErr:DWORD                             ; which check declined the frame, for the test harness
+RvzExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, Dolphin RVZ holding a GameCube disc
 BzDecodeStream      PROTO                      ; one bzip2 stream from the current input -> BOOL
 BzFree              PROTO                      ; release the block buffer between images
 ; the pieces of the deflate session bzip2.asm shares: same input, same output,
@@ -1146,6 +1151,12 @@ BzFree              PROTO                      ; release the block buffer betwee
 EXTERNDEF g_zfErr:DWORD
 ZfInByte            PROTO                      ; next input byte in eax, sets g_zfErr at the end
 ZfPutB              PROTO :DWORD               ; one byte to the output buffer
+ZfPutMem            PROTO :DWORD,:DWORD        ; pSrc, cb
+ZfPutZeros          PROTO :DWORD               ; cb
+ZfBeginOut          PROTO :DWORD,:DWORD,:DWORD,:DWORD  ; pszDst, hIn, cbLo, cbHi -> hOut or INVALID_HANDLE_VALUE
+ZfOutFinal          PROTO
+ZfExpandFree        PROTO
+ZfClosePair         PROTO :DWORD,:DWORD,:DWORD,:DWORD  ; ok, hIn, hOut, pszDst -> ok
 GzCompressFile      PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL; worker progress + Cancel
 EXTERNDEF g_saveGzip:DWORD                      ; save target ends in .gz: worker gzips the image
 
