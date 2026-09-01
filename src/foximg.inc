@@ -810,6 +810,7 @@ WriteFile           PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD
 ReadFile            PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD
 SetFilePointerEx    PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD
 SetFileInformationByHandle PROTO :DWORD,:DWORD,:DWORD,:DWORD
+SetEndOfFile        PROTO :DWORD
 CreateDirectoryW    PROTO :DWORD,:DWORD
 MoveFileExW         PROTO :DWORD,:DWORD,:DWORD
 DeleteFileW         PROTO :DWORD
@@ -1136,6 +1137,7 @@ DaaExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, PowerIS
 ChdExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, MAME CHD v5
 UifExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, MagicISO UIF
 DmgExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, Apple UDIF (zlib/raw/zero)
+PbpExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, PSP EBOOT holding a PS1 disc
 GzCompressFile      PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL; worker progress + Cancel
 EXTERNDEF g_saveGzip:DWORD                      ; save target ends in .gz: worker gzips the image
 

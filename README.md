@@ -50,7 +50,7 @@ The program is one small executable with no runtime dependencies.
 | ZSO | .zso | Yes | No | CISO layout with LZ4 blocks |
 | DAX | .dax | Yes | No | PSP: zlib frames and raw NC areas |
 | JSO | .jso | Yes | No | PSP: deflate and LZO methods |
-| PBP | .pbp | Planned | No | PSP EBOOT with the ISO inside DATA.PSAR |
+| PBP | .pbp | Yes | No | PS1 Classics EBOOT (PSISOIMG); multi-disc takes disc 1; encrypted PSP UMD declined |
 | CHD | .chd | Yes | No | v5: zlib, LZMA, FLAC, all CD codecs, stored and self hunks; parented CHDs declined |
 | GCZ | .gcz | Yes | No | Dolphin: zlib blocks, stored blocks |
 | WIA / RVZ | .wia .rvz | Planned | No | Dolphin: zstd / bzip2 / LZMA |
@@ -81,7 +81,7 @@ and then open like any other image, the same way ECM does.
 
 | Codec | Status | Used by |
 | --- | --- | --- |
-| DEFLATE (inflate) | Yes | .gz, .zip, .cso, .gcz, .dax, .jso, .isz (raw and zlib framing, auto-detected); later PBP |
+| DEFLATE (inflate) | Yes | .gz, .zip, .cso, .gcz, .dax, .jso, .isz, .pbp (raw and zlib framing, auto-detected) |
 | DEFLATE (compress) | Yes | Save As gzip ISO (fixed Huffman, 32 KB window) |
 | LZMA | Yes | CHD hunks; DAA v0x110 and RVZ later |
 | bzip2 | Planned | ISZ, RVZ |

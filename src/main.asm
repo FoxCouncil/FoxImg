@@ -26,7 +26,7 @@ szBusy    db 'Please wait for the current operation to finish (or cancel it).', 
 szDiscard    db 'Discard unsaved changes?', 0
 szDeleteAsk    db 'Delete the selected items from the image?', 0
 szDeleteDirAsk    db 'Delete this folder and everything inside it?', 0
-szAboutText    db 'FoxImg v1.4 - a small native disc image tool. 31 readable formats from ISO to CHD, six built-in codecs, CD audio playback, one dependency-free exe.', 0
+szAboutText    db 'FoxImg v1.4 - a small native disc image tool. 32 readable formats from ISO to CHD, six built-in codecs, CD audio playback, one dependency-free exe.', 0
 WSTR szSaved, <Saved>
 WSTR szExtracted, <Extracted>
 WSTR szCancelled, <Cancelled>
@@ -47,7 +47,7 @@ szFilterOpen LABEL WORD
     dw '*','.','g','c','z',';','*','.','d','a','x',';','*','.','g','c','m',';'
     dw '*','.','z','s','o',';','*','.','j','s','o',';','*','.','i','s','z',';','*','.','d','a','a',';'
     dw '*','.','b','5','t',';','*','.','b','6','t',';','*','.','c','2','d',';','*','.','m','d','x',';','*','.','c','h','d',';'
-    dw '*','.','u','i','f',';','*','.','d','m','g',0
+    dw '*','.','u','i','f',';','*','.','d','m','g',';','*','.','p','b','p',0
     dw 'A','l','l',' ','F','i','l','e','s',' ','(','*','.','*',')',0
     dw '*','.','*',0
     dw 0

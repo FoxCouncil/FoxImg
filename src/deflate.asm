@@ -5414,4 +5414,226 @@ done:
     ret
 DmgExpandFile ENDP
 
+; ---------------------------------------------------------------------------
+; PBP (PSP EBOOT): a PlayStation disc inside DATA.PSAR
+; ---------------------------------------------------------------------------
+; A PBP header is eight file offsets; only DATA.PSAR at 0x24 matters here. Sony's
+; PSP UMD dumps put an AES-encrypted NPUMDIMG there and are declined - what this
+; reads is the PS1 Classics layout, PSISOIMG0000, which is plain zlib.
+;
+; Inside one disc image: 32-byte index entries at 0x4000 give an offset and a
+; compressed length, and the data they point into begins at 0x100000. Each entry
+; covers sixteen raw 2352-byte sectors; a length equal to that full block means
+; the block was stored rather than deflated. The result is a raw MODE2/2352
+; image, which the sector sniffer then opens like any other raw dump.
+;
+; Multi-disc EBOOTs wrap the discs in PSTITLEIMG000000 and list five disc
+; offsets at 0x200. Only the first is taken, matching how the .mds and .b6t
+; readers here take the first data track.
+PBP_MAGIC       equ 50425000h           ; 00 'P' 'B' 'P'
+PBP_IDX_OFF     equ 4000h
+PBP_ISO_OFF     equ 100000h
+PBP_IDX_CB      equ PBP_ISO_OFF - PBP_IDX_OFF
+PBP_BLOCK       equ 16 * 930h           ; sixteen raw sectors, 0x9300
+PBP_MAXIDX      equ PBP_IDX_CB / 32
+
+; One index entry: seek to its data and append that block to the output.
+PbpBlock PROC USES esi pIdx:DWORD, disc:DWORD, idx:DWORD
+    LOCAL offLo:DWORD
+    LOCAL offHi:DWORD
+    mov esi, idx
+    shl esi, 5
+    add esi, pIdx
+    mov eax, dword ptr [esi]                ; offset from the start of the ISO data
+    add eax, disc
+    mov edx, 0
+    adc edx, 0
+    add eax, PBP_ISO_OFF
+    adc edx, 0
+    mov offLo, eax
+    mov offHi, edx
+    invoke ZfSetInput, offLo, offHi
+    mov eax, dword ptr [esi + 4]            ; compressed length
+    .IF eax == PBP_BLOCK
+        invoke ZfRawCopy, PBP_BLOCK
+    .ELSE
+        invoke ZfSmartInflate
+    .ENDIF
+    ret
+PbpBlock ENDP
+
+PbpExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
+    LOCAL hIn:DWORD
+    LOCAL hOut:DWORD
+    LOCAL hdr[40]:BYTE
+    LOCAL pos[5]:DWORD
+    LOCAL psar:DWORD
+    LOCAL disc:DWORD
+    LOCAL pIdx:DWORD
+    LOCAL nBlk:DWORD
+    LOCAL i:DWORD
+    LOCAL totLo:DWORD
+    LOCAL totHi:DWORD
+    LOCAL capLo:DWORD
+    LOCAL capHi:DWORD
+    LOCAL tmp:DWORD
+    LOCAL ok:DWORD
+    mov ok, FALSE
+    mov hOut, INVALID_HANDLE_VALUE
+    mov pIdx, 0
+    invoke FileOpenReadSeq, pszSrc
+    .IF eax == INVALID_HANDLE_VALUE
+        xor eax, eax
+        ret
+    .ENDIF
+    mov hIn, eax
+    invoke FileReadAt, hIn, 0, 0, addr hdr, 40
+    .IF eax != 40 || dword ptr hdr[0] != PBP_MAGIC
+        jmp done
+    .ENDIF
+    mov eax, dword ptr hdr[36]              ; 0x24: offset of DATA.PSAR
+    .IF eax == 0
+        jmp done
+    .ENDIF
+    mov psar, eax
+    mov disc, eax
+
+    invoke FileReadAt, hIn, disc, 0, addr hdr, 16
+    .IF eax != 16
+        jmp done
+    .ENDIF
+    .IF dword ptr hdr[0] != 53495350h || dword ptr hdr[4] != 474D494Fh || dword ptr hdr[8] != 30303030h
+        ; not "PSISOIMG0000" - the only other layout worth trying is the
+        ; multi-disc wrapper; an encrypted NPUMDIMG stops here
+        .IF dword ptr hdr[0] != 49545350h || dword ptr hdr[4] != 49454C54h || dword ptr hdr[8] != 3030474Dh || dword ptr hdr[12] != 30303030h
+            jmp done
+        .ENDIF
+        mov eax, psar
+        add eax, 200h
+        mov tmp, eax
+        invoke FileReadAt, hIn, tmp, 0, addr pos, 20
+        .IF eax != 20
+            jmp done
+        .ENDIF
+        xor ebx, ebx
+        .WHILE ebx < 5
+            mov eax, dword ptr pos[ebx * 4]
+            .BREAK .IF eax != 0
+            inc ebx
+        .ENDW
+        .IF ebx >= 5
+            jmp done
+        .ENDIF
+        mov ecx, psar
+        add eax, ecx
+        mov disc, eax
+        invoke FileReadAt, hIn, disc, 0, addr hdr, 16
+        .IF eax != 16
+            jmp done
+        .ENDIF
+        .IF dword ptr hdr[0] != 53495350h || dword ptr hdr[4] != 474D494Fh || dword ptr hdr[8] != 30303030h
+            jmp done
+        .ENDIF
+    .ENDIF
+
+    ; The index region always ends where the data begins, so a whole-region read
+    ; is in range for any file that got this far.
+    invoke VfsAlloc, PBP_IDX_CB
+    mov pIdx, eax
+    .IF eax == 0
+        jmp done
+    .ENDIF
+    mov eax, disc
+    add eax, PBP_IDX_OFF
+    mov tmp, eax
+    invoke FileReadAt, hIn, tmp, 0, pIdx, PBP_IDX_CB
+    .IF eax != PBP_IDX_CB
+        jmp done
+    .ENDIF
+    xor ebx, ebx
+    mov esi, pIdx
+    .WHILE ebx < PBP_MAXIDX
+        mov eax, dword ptr [esi]
+        or eax, dword ptr [esi + 4]
+        .BREAK .IF eax == 0                 ; the table is zero-filled past the last block
+        add esi, 32
+        inc ebx
+    .ENDW
+    mov nBlk, ebx
+    .IF ebx == 0
+        jmp done
+    .ENDIF
+    mov eax, ebx
+    mov ecx, PBP_BLOCK
+    mul ecx
+    mov capLo, eax
+    mov capHi, edx                          ; everything the index can possibly hold
+
+    invoke ZfBeginOut, pszDst, hIn, 0, 0
+    .IF eax == INVALID_HANDLE_VALUE
+        jmp done
+    .ENDIF
+    mov hOut, eax
+
+    ; The last block is padded, so take the real length from the volume itself.
+    ; Block 1 covers sectors 16-31, so the primary descriptor sits at its front:
+    ; 24 bytes of raw sector header, then the volume space size at 80.
+    mov eax, capLo
+    mov totLo, eax
+    mov eax, capHi
+    mov totHi, eax
+    .IF nBlk > 1
+        invoke PbpBlock, pIdx, disc, 1
+        .IF g_zfErr == 0 && g_zfOutPos >= 108
+            mov esi, g_zfOut
+            mov eax, dword ptr [esi + 104]
+            mov ecx, 930h
+            mul ecx
+            or eax, eax
+            jnz pbp_haveLo
+            or edx, edx
+            jz pbp_keepCap
+pbp_haveLo:
+            cmp edx, capHi                  ; a size past the blocks we hold is junk
+            ja pbp_keepCap
+            jb pbp_takeIt
+            cmp eax, capLo
+            ja pbp_keepCap
+pbp_takeIt:
+            mov totLo, eax
+            mov totHi, edx
+pbp_keepCap:
+        .ENDIF
+        mov g_zfOutPos, 0                   ; discard the probe; nothing was flushed
+        mov g_zfErr, 0
+    .ENDIF
+    invoke FilePresize, hOut, totLo, totHi
+
+    mov i, 0
+    .WHILE g_zfErr == 0
+        mov eax, i
+        .BREAK .IF eax >= nBlk
+        invoke PbpBlock, pIdx, disc, i
+        inc i
+    .ENDW
+    .IF g_zfErr != 0
+        jmp done
+    .ENDIF
+    invoke ZfOutFinal
+    .IF g_zfErr != 0
+        jmp done
+    .ENDIF
+    ; drop the padding the final block carried past the end of the volume
+    invoke SetFilePointerEx, hOut, totLo, totHi, NULL, FILE_BEGIN
+    .IF eax != 0
+        invoke SetEndOfFile, hOut
+    .ENDIF
+    mov ok, TRUE
+done:
+    invoke ZfExpandFree
+    invoke VfsFreeMem, pIdx
+    invoke ZfClosePair, ok, hIn, hOut, pszDst
+    ret
+PbpExpandFile ENDP
+
 END
