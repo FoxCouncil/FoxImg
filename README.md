@@ -64,7 +64,7 @@ The program is one small executable with no runtime dependencies.
 | BlindWrite 5/6 | .b5t .b6t | Yes | No | Descriptor beside the .b5i/.b6i data file |
 | C2D | .c2d | Yes | No | WinOnCD / Roxio; compressed C2D declined |
 | PDI | .pdi | Planned | No | Instant CD/DVD |
-| DMG | .dmg | Yes | No | Apple UDIF: zlib, raw and zero chunks; ADC, bzip2, lzfse declined |
+| DMG | .dmg | Yes | No | Apple UDIF: zlib, bzip2, raw and zero chunks; ADC and lzfse declined |
 | Unknown containers | any | Yes | No | Signature scan finds an ISO 9660 volume at any offset |
 
 Read-only formats convert on save: open the image, then save it as ISO, BIN/CUE, or gzip ISO.
@@ -88,7 +88,7 @@ chunk by chunk - an ISZ may hold zlib and bzip2 blocks in one image.
 | DEFLATE (inflate) | Yes | .gz, .zip, .cso, .gcz, .dax, .jso, .isz, .pbp (raw and zlib framing, auto-detected) |
 | DEFLATE (compress) | Yes | Save As gzip ISO (fixed Huffman, 32 KB window) |
 | LZMA | Yes | CHD hunks; DAA v0x110 and RVZ later |
-| bzip2 | Yes | .bz2, ISZ chunks; later RVZ |
+| bzip2 | Yes | .bz2, ISZ and DMG chunks; later RVZ |
 | zstd | Planned | RVZ |
 | LZ4 | Yes | ZSO, CISO v2 |
 | FLAC | Yes | CHD cdfl and flac hunks (16-bit stereo) |

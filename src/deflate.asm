@@ -5385,7 +5385,9 @@ DmgExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
                                 invoke ZfRawCopy, cntCb
                             .ELSEIF eax == 80000005h        ; zlib
                                 invoke ZfZlibInflate
-                            .ELSE                           ; ADC, bzip2, lzfse
+                            .ELSEIF eax == 80000006h        ; bzip2
+                                invoke BzDecodeStream
+                            .ELSE                           ; ADC, lzfse
                                 mov g_zfErr, 1
                                 .BREAK
                             .ENDIF
