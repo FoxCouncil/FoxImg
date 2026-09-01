@@ -104,7 +104,7 @@ executable directly:
 https://github.com/FoxCouncil/FoxImg/releases/latest/download/FoxImg.exe
 ```
 
-There is nothing to install. The program is a single .exe of about 110 KB.
+There is nothing to install. The program is a single .exe under 100 KB.
 
 ## Build
 

@@ -891,7 +891,6 @@ EXTERNDEF g_hFontMono:DWORD                 ; Consolas at the current DPI (previ
 UiRefreshTree       PROTO                       ; rebuild tree from model, keep current dir
 UiFillListNode      PROTO :DWORD                ; pDirNode
 UiSelectDir         PROTO :DWORD                ; pDirNode (select in tree)
-UiCurrentDir        PROTO                       ; -> NODE*
 UiSelectedNode      PROTO                       ; -> first selected list NODE* or 0
 UiForEachSelected   PROTO :DWORD,:DWORD         ; pfn(pNode, lParam), lParam
 UiBeginRename       PROTO :DWORD                ; pNode (must be in current list)

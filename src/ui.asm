@@ -349,11 +349,6 @@ UiSelectDir PROC pDirNode:DWORD
     ret
 UiSelectDir ENDP
 
-UiCurrentDir PROC
-    mov eax, g_pCurDir
-    ret
-UiCurrentDir ENDP
-
 ; ---------------------------------------------------------------------------
 ; List
 ; ---------------------------------------------------------------------------
