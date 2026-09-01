@@ -1150,6 +1150,7 @@ IsoWrite PROC USES esi ebx pszOutPath:DWORD
         jmp cleanup_fail
     .ENDIF
     mov g_hOut, eax
+    invoke FilePresize, g_hOut, g_progTotal, g_progTotalHi  ; the layout already knows the final size
 
     mov g_lba, 0
     invoke WriteZeroSectors, 16

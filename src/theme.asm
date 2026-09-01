@@ -198,8 +198,13 @@ ThemeApply PROC hWnd:DWORD
     mov eax, g_bDark
     mov bDark, eax
 
-    ; Title bar
+    ; Title bar. The attribute was renumbered from 19 to 20 in Windows 10 2004;
+    ; on 1809 - 1903 the documented one fails and the frame stays light beside a
+    ; dark client area, so fall back rather than leave it mismatched.
     invoke DwmSetWindowAttribute, hWnd, DWMWA_USE_IMMERSIVE_DARK_MODE, addr bDark, 4
+    .IF eax != 0
+        invoke DwmSetWindowAttribute, hWnd, DWMWA_USE_IMMERSIVE_DARK_MODE_OLD, addr bDark, 4
+    .ENDIF
 
     invoke AllowDark, hWnd
     invoke AllowDark, g_hTree

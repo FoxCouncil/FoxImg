@@ -104,7 +104,7 @@ CdaCopyData PROC USES esi ebx pNode:DWORD, hOut:DWORD
     .IF eax == 0
         ret
     .ENDIF
-    invoke FileOpenRead, offset g_szBinPath
+    invoke FileOpenReadSeq, offset g_szBinPath
     .IF eax == INVALID_HANDLE_VALUE
         ret
     .ENDIF
@@ -274,7 +274,7 @@ AudioToggle PROC USES ebx pNode:DWORD
         ret
     .ENDIF
     invoke CdaNodeRange, pNode, addr offLo, addr offHi, addr cb
-    invoke FileOpenRead, offset g_szBinPath
+    invoke FileOpenReadSeq, offset g_szBinPath
     .IF eax == INVALID_HANDLE_VALUE
         ret
     .ENDIF

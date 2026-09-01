@@ -585,7 +585,7 @@ VfsCopyData PROC USES esi ebx pNode:DWORD, hOut:DWORD
         invoke IsoCopyBytes, [esi].NODE.isoExtent, [esi].NODE.isoByteRem, [esi].NODE.dataSize, hOut
         ret
     .ELSEIF eax & NF_HOST
-        invoke FileOpenRead, [esi].NODE.pszHost
+        invoke FileOpenReadSeq, [esi].NODE.pszHost
         .IF eax == INVALID_HANDLE_VALUE
             xor eax, eax
             ret
@@ -660,7 +660,7 @@ VfsReadAll PROC USES esi edi pNode:DWORD, cbMax:DWORD, pcbOut:DWORD
             jmp fail
         .ENDIF
     .ELSEIF eax & NF_HOST
-        invoke FileOpenRead, [esi].NODE.pszHost
+        invoke FileOpenReadSeq, [esi].NODE.pszHost
         .IF eax == INVALID_HANDLE_VALUE
             jmp fail
         .ENDIF

@@ -196,6 +196,30 @@ FileOpenRead PROC pszPath:DWORD
     ret
 FileOpenRead ENDP
 
+; Same open for readers that walk a file once, front to back - the expanders and
+; the host-file copies. Deliberately not the default: IsoOpen's handle is mapped
+; and browsed at random, and the sequential hint would have the cache manager
+; drop pages the user is about to click on again.
+FileOpenReadSeq PROC pszPath:DWORD
+    invoke CreateFileW, pszPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL
+    ret
+FileOpenReadSeq ENDP
+
+; Reserve the whole extent before a long write. Saves the filesystem from
+; growing the file a buffer at a time - fewer metadata updates and far less
+; fragmentation on a multi-gigabyte image. Advisory: a failure (short of space
+; now, or a filesystem that will not preallocate) leaves the write to proceed
+; and fail on its own terms, so the result is ignored.
+FilePresize PROC hFile:DWORD, cbLo:DWORD, cbHi:DWORD
+    LOCAL fai[2]:DWORD
+    mov eax, cbLo
+    mov fai[0], eax
+    mov eax, cbHi
+    mov fai[4], eax
+    invoke SetFileInformationByHandle, hFile, FileAllocationInfo, addr fai, 8
+    ret
+FilePresize ENDP
+
 FileReadAt PROC hFile:DWORD, offLo:DWORD, offHi:DWORD, pDst:DWORD, cb:DWORD
     LOCAL nRead:DWORD
     invoke SetFilePointerEx, hFile, offLo, offHi, NULL, FILE_BEGIN

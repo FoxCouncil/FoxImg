@@ -40,6 +40,8 @@ GENERIC_READ            equ 80000000h
 FILE_SHARE_READ         equ 1
 OPEN_EXISTING           equ 3
 FILE_ATTRIBUTE_NORMAL   equ 80h
+FILE_FLAG_SEQUENTIAL_SCAN equ 08000000h    ; winbase.h - read ahead harder, evict behind
+FileAllocationInfo      equ 5              ; minwinbase.h FILE_INFO_BY_HANDLE_CLASS
 PAGE_READONLY           equ 2
 FILE_MAP_READ           equ 4
 
@@ -371,7 +373,8 @@ WM_DPICHANGED           equ 02E0h
 SPI_GETNONCLIENTMETRICS equ 0029h
 SPI_GETWORKAREA         equ 0030h
 SystemParametersInfoW   PROTO :DWORD,:DWORD,:DWORD,:DWORD
-DWMWA_USE_IMMERSIVE_DARK_MODE equ 20
+DWMWA_USE_IMMERSIVE_DARK_MODE equ 20        ; dwmapi.h; Windows 10 2004 and later
+DWMWA_USE_IMMERSIVE_DARK_MODE_OLD equ 19    ; the same flag on 1809 - 1903, before it was documented
 CLR_NONE                equ 0FFFFFFFFh
 CLR_DEFAULT             equ 0FF000000h
 SWP_NOZORDER            equ 0004h
@@ -806,6 +809,7 @@ RtlMoveMemory       PROTO :DWORD,:DWORD,:DWORD
 WriteFile           PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD
 ReadFile            PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD
 SetFilePointerEx    PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD
+SetFileInformationByHandle PROTO :DWORD,:DWORD,:DWORD,:DWORD
 CreateDirectoryW    PROTO :DWORD,:DWORD
 MoveFileExW         PROTO :DWORD,:DWORD,:DWORD
 DeleteFileW         PROTO :DWORD
@@ -1274,6 +1278,8 @@ FindKeyword     PROTO :DWORD,:DWORD,:DWORD      ; pBuf, cb, pszKeyA -> pointer p
 ParseUint       PROTO :DWORD                    ; pText -> eax value, edx next
 ParseName       PROTO :DWORD,:DWORD             ; pText, pszOut -> edx next
 FileOpenRead    PROTO :DWORD                    ; pszPath -> handle or INVALID_HANDLE_VALUE
+FileOpenReadSeq PROTO :DWORD                    ; same, for whole-file one-pass readers
+FilePresize     PROTO :DWORD,:DWORD,:DWORD      ; hFile, cbLo, cbHi - reserve the extent up front
 FileReadAt      PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD  ; hFile, offLo, offHi, pDst, cb -> bytes read
 FileSize64      PROTO :DWORD,:DWORD,:DWORD      ; hFile, pLo, pHi
 ReadTextFile    PROTO :DWORD,:DWORD             ; pszPath, pcb -> heap buffer or 0
