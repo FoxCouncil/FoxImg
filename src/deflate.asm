@@ -1,4 +1,4 @@
-; FoxImg - DEFLATE (RFC 1951): an inflate decoder and a fixed-Huffman compressor, plus the gzip,
+; FoxImg - DEFLATE (RFC 1951): an inflate decoder and a compressor that picks dynamic Huffman, fixed or stored per block, plus the gzip,
 ; zip and CSO wrappers built on them. The exe carries its own codec because the Windows compression
 ; APIs only speak their own framings (MSZIP / XPRESS / LZMS), not the raw deflate streams these
 ; files hold. CRC-32 comes from ntdll's RtlComputeCrc32, so no table lives in the image.
@@ -1317,11 +1317,31 @@ g_dfChunkLen    dd 0
 g_dfHead        dd 0                    ; hash -> position + 1, 0 when empty
 g_dfPrev        dd 0                    ; position -> previous position + 1 on the same chain
 g_dfMDist       dd 0                    ; distance of the match DfLongestMatch found
+g_dfTok         dd 0                    ; one dword per token: literal, or bit 31 | lsym<<26 | (len-3)<<16 | dist-1
+g_dfTokN        dd 0
+g_dfExtraBits   dd 0                    ; length and distance extra bits owed by the matches so far
 
 .data?
 g_dfLitCode     dw 288 dup(?)           ; fixed literal/length codes, bit-reversed for LSB-first emit
 g_dfLitBits     db 288 dup(?)
 g_dfDistCode    dw 30 dup(?)
+g_dfFreqL       dd 286 dup(?)           ; per-block symbol counts: literal/length, distance, code-length code
+g_dfFreqD       dd 30 dup(?)
+g_dfFreqC       dd 19 dup(?)
+g_dfLenL        db 288 dup(?)           ; chosen code lengths and their LSB-first codes
+g_dfLenD        db 32 dup(?)
+g_dfLenC        db 20 dup(?)
+g_dfCodeL       dw 288 dup(?)
+g_dfCodeD       dw 32 dup(?)
+g_dfCodeC       dw 20 dup(?)
+g_dfBlCount     dd 17 dup(?)            ; Huffman scratch: codes per length, sorted symbols, tree
+g_dfNextCode    dd 17 dup(?)
+g_dfSortSym     dw 288 dup(?)
+g_dfNodeW       dd 576 dup(?)
+g_dfParent      dw 576 dup(?)
+g_dfDepth       db 576 dup(?)
+g_dfRleSym      db 320 dup(?)           ; the code-length sequence after run-length coding
+g_dfRleExtra    db 320 dup(?)
 
 .code
 
@@ -1436,42 +1456,655 @@ DfPutLit PROC sym:DWORD
     ret
 DfPutLit ENDP
 
-DfPutMatch PROC USES ebx mlen:DWORD, mdist:DWORD
-    ; length symbol: highest base not above the length
-    mov ebx, 28
-    .WHILE TRUE
-        movzx eax, word ptr g_zfLenBase[ebx * 2]
-        .BREAK .IF eax <= mlen
-        dec ebx
+; ---------------------------------------------------------------------------
+; Huffman code construction (RFC 1951 3.2.2, lengths limited as zlib does it)
+; ---------------------------------------------------------------------------
+; Code lengths for n symbols from their counts, none longer than maxBits.
+; Symbols with a count of zero get length zero. The tree is built with the
+; two-queue method over the symbols sorted by count; depths past the limit are
+; then folded back with zlib's bit-count fix, and the lengths are dealt out
+; longest-first to the rarest symbols, which keeps the result a prefix code.
+DfBuildLengths PROC USES esi edi ebx pFreq:DWORD, n:DWORD, pLen:DWORD, maxBits:DWORD
+    LOCAL nUsed:DWORD
+    LOCAL i:DWORD
+    LOCAL j:DWORD
+    LOCAL leafI:DWORD
+    LOCAL innerJ:DWORD
+    LOCAL innerK:DWORD
+    LOCAL t:DWORD
+    LOCAL overflow:DWORD
+    LOCAL bits:DWORD
+    LOCAL a:DWORD
+    LOCAL b:DWORD
+    ; clear lengths, collect the used symbols in ascending order of count (insertion sort)
+    mov edi, pLen
+    xor eax, eax
+    mov ecx, n
+    rep stosb
+    mov nUsed, 0
+    mov i, 0
+    .WHILE 1
+        mov ecx, n
+        .BREAK .IF i >= ecx
+        mov esi, pFreq
+        mov ecx, i
+        mov eax, dword ptr [esi + ecx * 4]
+        .IF eax != 0
+            mov ebx, nUsed                  ; slide down until the count to the left is not larger
+            .WHILE ebx > 0
+                movzx edx, word ptr g_dfSortSym[ebx * 2 - 2]
+                mov edx, dword ptr [esi + edx * 4]
+                .BREAK .IF edx <= eax
+                movzx edx, word ptr g_dfSortSym[ebx * 2 - 2]
+                mov word ptr g_dfSortSym[ebx * 2], dx
+                dec ebx
+            .ENDW
+            mov eax, i
+            mov word ptr g_dfSortSym[ebx * 2], ax
+            inc nUsed
+        .ENDIF
+        inc i
     .ENDW
-    mov eax, ebx
-    add eax, 257
-    invoke DfPutLit, eax
-    movzx eax, byte ptr g_zfLenExtra[ebx]
-    .IF eax != 0
-        movzx ecx, word ptr g_zfLenBase[ebx * 2]
-        mov edx, mlen
-        sub edx, ecx
-        invoke DfEmit, edx, eax
+    .IF nUsed == 0
+        ret
     .ENDIF
-    ; distance symbol
-    mov ebx, 29
-    .WHILE TRUE
-        movzx eax, word ptr g_zfDistBase[ebx * 2]
-        .BREAK .IF eax <= mdist
-        dec ebx
+    .IF nUsed == 1
+        movzx eax, word ptr g_dfSortSym[0]
+        mov edi, pLen
+        mov byte ptr [edi + eax], 1         ; a lone symbol still needs a one-bit code
+        ret
+    .ENDIF
+    ; leaves are nodes 0..nUsed-1 (sorted), internal nodes follow as they are made
+    mov i, 0
+    .WHILE 1
+        mov ecx, nUsed
+        .BREAK .IF i >= ecx
+        mov ecx, i
+        movzx eax, word ptr g_dfSortSym[ecx * 2]
+        mov esi, pFreq
+        mov eax, dword ptr [esi + eax * 4]
+        mov dword ptr g_dfNodeW[ecx * 4], eax
+        inc i
     .ENDW
-    movzx eax, word ptr g_dfDistCode[ebx * 2]
-    invoke DfEmit, eax, 5
-    movzx eax, byte ptr g_zfDistExtra[ebx]
-    .IF eax != 0
-        movzx ecx, word ptr g_zfDistBase[ebx * 2]
-        mov edx, mdist
-        sub edx, ecx
-        invoke DfEmit, edx, eax
+    mov leafI, 0
+    mov eax, nUsed
+    mov innerJ, eax
+    mov innerK, eax
+    mov t, 0
+    .WHILE 1
+        mov ecx, nUsed
+        dec ecx
+        .BREAK .IF t >= ecx
+        ; two lightest among the next leaf and the oldest unattached internal node, twice
+        mov ecx, 2
+        .WHILE ecx != 0
+            push ecx
+            mov eax, leafI
+            mov edx, innerJ
+            .IF eax >= nUsed
+                mov eax, edx
+                inc innerJ
+            .ELSEIF edx >= innerK
+                inc leafI
+            .ELSE
+                mov ebx, dword ptr g_dfNodeW[eax * 4]
+                .IF ebx <= dword ptr g_dfNodeW[edx * 4]
+                    inc leafI
+                .ELSE
+                    mov eax, edx
+                    inc innerJ
+                .ENDIF
+            .ENDIF
+            pop ecx
+            .IF ecx == 2
+                mov a, eax
+            .ELSE
+                mov b, eax
+            .ENDIF
+            dec ecx
+        .ENDW
+        mov edx, innerK                     ; the new parent
+        mov eax, a
+        mov word ptr g_dfParent[eax * 2], dx
+        mov ecx, dword ptr g_dfNodeW[eax * 4]
+        mov eax, b
+        mov word ptr g_dfParent[eax * 2], dx
+        add ecx, dword ptr g_dfNodeW[eax * 4]
+        mov dword ptr g_dfNodeW[edx * 4], ecx
+        inc innerK
+        inc t
+    .ENDW
+    ; depths, top down from the root (the last node made), each one below its
+    ; parent's - and clamped to the limit as zlib does it: an internal node past
+    ; the limit is held at the limit, so its children measure from there, and
+    ; every node that hit the clamp counts as overflow, leaves and inner alike.
+    ; That count is what makes the bit-count fix below come out exactly complete.
+    mov edi, offset g_dfBlCount
+    xor eax, eax
+    mov ecx, 17
+    rep stosd
+    mov overflow, 0
+    mov ecx, innerK
+    dec ecx
+    mov byte ptr g_dfDepth[ecx], 0
+    .WHILE ecx != 0
+        dec ecx
+        movzx eax, word ptr g_dfParent[ecx * 2]
+        movzx eax, byte ptr g_dfDepth[eax]
+        inc eax
+        .IF eax > maxBits
+            mov eax, maxBits
+            inc overflow
+        .ENDIF
+        mov byte ptr g_dfDepth[ecx], al
+        .IF ecx < nUsed
+            inc dword ptr g_dfBlCount[eax * 4]
+        .ENDIF
+    .ENDW
+    .IF overflow != 0
+        ; zlib's fix: move one code from the deepest full level down a step, twice
+        .REPEAT
+            mov ecx, maxBits
+            dec ecx
+            .WHILE dword ptr g_dfBlCount[ecx * 4] == 0
+                dec ecx
+            .ENDW
+            dec dword ptr g_dfBlCount[ecx * 4]
+            add dword ptr g_dfBlCount[ecx * 4 + 4], 2
+            mov ecx, maxBits
+            dec dword ptr g_dfBlCount[ecx * 4]
+            sub overflow, 2
+        .UNTIL sdword ptr overflow <= 0
     .ENDIF
+    ; deal the lengths out: the longest to the least frequent symbols
+    mov j, 0
+    mov eax, maxBits
+    mov bits, eax
+    mov edi, pLen
+    .WHILE bits != 0
+        mov ecx, bits
+        mov ecx, dword ptr g_dfBlCount[ecx * 4]
+        .WHILE ecx != 0
+            mov edx, j
+            movzx eax, word ptr g_dfSortSym[edx * 2]
+            mov edx, bits
+            mov byte ptr [edi + eax], dl
+            inc j
+            dec ecx
+        .ENDW
+        dec bits
+    .ENDW
     ret
-DfPutMatch ENDP
+DfBuildLengths ENDP
+
+; Canonical codes from lengths, stored bit-reversed for the LSB-first emitter
+DfBuildCodes PROC USES esi edi ebx pLen:DWORD, n:DWORD, pCode:DWORD, maxBits:DWORD
+    LOCAL i:DWORD
+    mov edi, offset g_dfBlCount
+    xor eax, eax
+    mov ecx, 17
+    rep stosd
+    mov esi, pLen
+    xor ecx, ecx
+    .WHILE ecx < n
+        movzx eax, byte ptr [esi + ecx]
+        inc dword ptr g_dfBlCount[eax * 4]
+        inc ecx
+    .ENDW
+    mov dword ptr g_dfBlCount[0], 0
+    xor eax, eax                            ; code = (code + bl_count[bits-1]) << 1
+    mov ecx, 1
+    .WHILE ecx <= maxBits
+        add eax, dword ptr g_dfBlCount[ecx * 4 - 4]
+        shl eax, 1
+        mov dword ptr g_dfNextCode[ecx * 4], eax
+        inc ecx
+    .ENDW
+    mov edi, pCode
+    mov i, 0
+    .WHILE 1
+        mov ecx, n
+        .BREAK .IF i >= ecx
+        mov ecx, i
+        movzx ebx, byte ptr [esi + ecx]
+        mov word ptr [edi + ecx * 2], 0
+        .IF ebx != 0
+            mov eax, dword ptr g_dfNextCode[ebx * 4]
+            inc dword ptr g_dfNextCode[ebx * 4]
+            invoke DfRev, eax, ebx
+            mov ecx, i
+            mov word ptr [edi + ecx * 2], ax
+        .ENDIF
+        inc i
+    .ENDW
+    ret
+DfBuildCodes ENDP
+
+; bits spent by a set of counts under a set of lengths
+DfCostOf PROC USES esi edi pFreq:DWORD, pLen:DWORD, n:DWORD
+    mov esi, pFreq
+    mov edi, pLen
+    xor eax, eax
+    xor ecx, ecx
+    .WHILE ecx < n
+        movzx edx, byte ptr [edi + ecx]
+        imul edx, dword ptr [esi + ecx * 4]
+        add eax, edx
+        inc ecx
+    .ENDW
+    ret
+DfCostOf ENDP
+
+; ---------------------------------------------------------------------------
+; Block emission
+; ---------------------------------------------------------------------------
+; Length symbol (0-28) for a match length: the highest base not above it
+DfLenSym PROC mlen:DWORD
+    mov eax, 28
+    .WHILE 1
+        movzx ecx, word ptr g_zfLenBase[eax * 2]
+        .BREAK .IF ecx <= mlen
+        dec eax
+    .ENDW
+    ret
+DfLenSym ENDP
+
+DfDistSym PROC mdist:DWORD
+    mov eax, 29
+    .WHILE 1
+        movzx ecx, word ptr g_zfDistBase[eax * 2]
+        .BREAK .IF ecx <= mdist
+        dec eax
+    .ENDW
+    ret
+DfDistSym ENDP
+
+; Run-length code the nlit + ndist lengths into g_dfRleSym / g_dfRleExtra, count
+; the code-length symbols, and return how many were produced (RFC 1951 3.2.7)
+DfRleLengths PROC USES esi edi ebx nlit:DWORD, ndist:DWORD
+    LOCAL total:DWORD
+    LOCAL i:DWORD
+    LOCAL cur:DWORD
+    LOCAL run:DWORD
+    LOCAL outN:DWORD
+    LOCAL prev:DWORD
+    mov edi, offset g_dfFreqC
+    xor eax, eax
+    mov ecx, 19
+    rep stosd
+    mov eax, nlit
+    add eax, ndist
+    mov total, eax
+    mov outN, 0
+    mov prev, -1
+    mov i, 0
+    .WHILE 1
+        mov ecx, total
+        .BREAK .IF i >= ecx
+        ; the length at position i: literal table first, then the distance table
+        mov ecx, i
+        .IF ecx < nlit
+            movzx eax, byte ptr g_dfLenL[ecx]
+        .ELSE
+            sub ecx, nlit
+            movzx eax, byte ptr g_dfLenD[ecx]
+        .ENDIF
+        mov cur, eax
+        ; how far this value repeats
+        mov run, 1
+        mov ebx, i
+        inc ebx
+        .WHILE 1
+            mov ecx, total
+            .BREAK .IF ebx >= ecx
+            mov ecx, ebx
+            .IF ecx < nlit
+                movzx edx, byte ptr g_dfLenL[ecx]
+            .ELSE
+                sub ecx, nlit
+                movzx edx, byte ptr g_dfLenD[ecx]
+            .ENDIF
+            .BREAK .IF edx != cur
+            .BREAK .IF run >= 138
+            inc run
+            inc ebx
+        .ENDW
+        mov ecx, outN
+        mov eax, cur
+        .IF eax == 0 && run >= 11
+            mov byte ptr g_dfRleSym[ecx], 18   ; 11-138 zeros
+            mov eax, run
+            sub eax, 11
+            mov byte ptr g_dfRleExtra[ecx], al
+            inc dword ptr g_dfFreqC[18 * 4]
+            inc outN
+            mov eax, run
+            add i, eax
+        .ELSEIF eax == 0 && run >= 3
+            mov byte ptr g_dfRleSym[ecx], 17   ; 3-10 zeros
+            .IF run > 10
+                mov run, 10
+            .ENDIF
+            mov eax, run
+            sub eax, 3
+            mov byte ptr g_dfRleExtra[ecx], al
+            inc dword ptr g_dfFreqC[17 * 4]
+            inc outN
+            mov eax, run
+            add i, eax
+        .ELSEIF eax != 0 && eax == prev && run >= 3
+            .IF run > 6
+                mov run, 6                  ; 3-6 repeats of the previous length
+            .ENDIF
+            mov byte ptr g_dfRleSym[ecx], 16
+            mov eax, run
+            sub eax, 3
+            mov byte ptr g_dfRleExtra[ecx], al
+            inc dword ptr g_dfFreqC[16 * 4]
+            inc outN
+            mov eax, run
+            add i, eax
+        .ELSE
+            mov eax, cur
+            mov byte ptr g_dfRleSym[ecx], al   ; the length itself
+            mov byte ptr g_dfRleExtra[ecx], 0
+            inc dword ptr g_dfFreqC[eax * 4]
+            inc outN
+            inc i
+        .ENDIF
+        mov eax, cur
+        mov prev, eax
+    .ENDW
+    mov eax, outN
+    ret
+DfRleLengths ENDP
+
+; Emit the tokens of the current chunk as one block, choosing the cheapest of a
+; dynamic-Huffman block, a fixed-Huffman block, or stored pieces.
+DfEmitBlock PROC USES esi edi ebx last:DWORD
+    LOCAL nlit:DWORD
+    LOCAL ndist:DWORD
+    LOCAL nRle:DWORD
+    LOCAL hclen:DWORD
+    LOCAL costDyn:DWORD
+    LOCAL costFix:DWORD
+    LOCAL costStored:DWORD
+    LOCAL i:DWORD
+    LOCAL pCodeL:DWORD
+    LOCAL pLenL:DWORD
+    LOCAL pCodeD:DWORD
+    LOCAL pLenD:DWORD
+    LOCAL tok:DWORD
+    LOCAL piece:DWORD
+    inc dword ptr g_dfFreqL[256 * 4]        ; end of block is a symbol too
+    ; --- dynamic: lengths, their run-length form, and the code-length code ---
+    invoke DfBuildLengths, offset g_dfFreqL, 286, offset g_dfLenL, 15
+    invoke DfBuildLengths, offset g_dfFreqD, 30, offset g_dfLenD, 15
+    xor ecx, ecx                            ; a block without a single match still has to
+    xor eax, eax                            ; describe one distance code, or decoders balk
+    .WHILE ecx < 30
+        or al, byte ptr g_dfLenD[ecx]
+        inc ecx
+    .ENDW
+    .IF eax == 0
+        mov byte ptr g_dfLenD[0], 1
+    .ENDIF
+    mov nlit, 257
+    mov ecx, 285
+    .WHILE ecx >= 257
+        .IF byte ptr g_dfLenL[ecx] != 0
+            lea eax, [ecx + 1]
+            mov nlit, eax
+            .BREAK
+        .ENDIF
+        dec ecx
+    .ENDW
+    mov ndist, 1
+    mov ecx, 29
+    .WHILE ecx >= 1
+        .IF byte ptr g_dfLenD[ecx] != 0
+            lea eax, [ecx + 1]
+            mov ndist, eax
+            .BREAK
+        .ENDIF
+        dec ecx
+    .ENDW
+    invoke DfRleLengths, nlit, ndist
+    mov nRle, eax
+    invoke DfBuildLengths, offset g_dfFreqC, 19, offset g_dfLenC, 7
+    mov hclen, 4
+    mov ecx, 18
+    .WHILE ecx >= 4
+        movzx eax, byte ptr g_zfClOrder[ecx]
+        .IF byte ptr g_dfLenC[eax] != 0
+            lea eax, [ecx + 1]
+            mov hclen, eax
+            .BREAK
+        .ENDIF
+        dec ecx
+    .ENDW
+    ; --- costs in bits ---
+    invoke DfCostOf, offset g_dfFreqL, offset g_dfLenL, 286
+    mov costDyn, eax
+    invoke DfCostOf, offset g_dfFreqD, offset g_dfLenD, 30
+    add costDyn, eax
+    invoke DfCostOf, offset g_dfFreqC, offset g_dfLenC, 19
+    add costDyn, eax
+    mov eax, hclen
+    lea eax, [eax * 2 + eax]
+    add eax, 17                             ; 3 + 5 + 5 + 4 header bits
+    add costDyn, eax
+    mov eax, g_dfExtraBits
+    add costDyn, eax
+    xor ecx, ecx                            ; the run-length extras
+    xor eax, eax
+    .WHILE ecx < nRle
+        movzx edx, byte ptr g_dfRleSym[ecx]
+        .IF edx == 16
+            add eax, 2
+        .ELSEIF edx == 17
+            add eax, 3
+        .ELSEIF edx == 18
+            add eax, 7
+        .ENDIF
+        inc ecx
+    .ENDW
+    add costDyn, eax
+    invoke DfCostOf, offset g_dfFreqL, offset g_dfLitBits, 286
+    mov costFix, eax
+    xor eax, eax
+    xor ecx, ecx
+    .WHILE ecx < 30
+        add eax, dword ptr g_dfFreqD[ecx * 4]
+        inc ecx
+    .ENDW
+    lea eax, [eax * 4 + eax]                ; five bits per distance code
+    add costFix, eax
+    mov eax, g_dfExtraBits
+    add costFix, eax
+    add costFix, 3
+    mov eax, g_dfChunkLen
+    add eax, 65534
+    xor edx, edx
+    mov ecx, 65535
+    div ecx                                 ; stored pieces of up to 65535 bytes
+    lea eax, [eax * 4 + eax]
+    add eax, g_dfChunkLen
+    shl eax, 3
+    add eax, 10
+    mov costStored, eax
+    ; --- stored wins on incompressible data ---
+    mov eax, costStored
+    .IF eax < costDyn && eax < costFix
+        mov esi, g_dfChunkPtr
+        mov i, 0
+        .WHILE g_dfErr == 0
+            mov eax, g_dfChunkLen
+            sub eax, i
+            .BREAK .IF eax == 0
+            mov piece, eax
+            .IF eax > 65535
+                mov piece, 65535
+            .ENDIF
+            mov eax, last
+            and eax, 1
+            mov ecx, i
+            add ecx, piece
+            .IF ecx != g_dfChunkLen
+                xor eax, eax                ; only the very last piece may be final
+            .ENDIF
+            invoke DfEmit, eax, 3           ; BTYPE 00
+            .IF g_dfBitCnt != 0
+                invoke DfEmit, 0, 7         ; to the byte boundary
+                mov g_dfBitCnt, 0
+                mov g_dfBitBuf, 0
+            .ENDIF
+            mov eax, piece
+            invoke DfEmit, eax, 16
+            mov eax, piece
+            not eax
+            and eax, 0FFFFh
+            invoke DfEmit, eax, 16
+            invoke DfFlushOut
+            mov eax, esi
+            add eax, i
+            invoke DfWriteRaw, eax, piece
+            mov eax, piece
+            add i, eax
+        .ENDW
+        ret
+    .ENDIF
+    ; --- header for the Huffman block that won ---
+    mov eax, last
+    and eax, 1
+    mov ecx, costDyn
+    .IF ecx < costFix
+        or eax, 4                           ; BTYPE 10: dynamic
+        invoke DfEmit, eax, 3
+        invoke DfBuildCodes, offset g_dfLenL, 286, offset g_dfCodeL, 15
+        invoke DfBuildCodes, offset g_dfLenD, 30, offset g_dfCodeD, 15
+        invoke DfBuildCodes, offset g_dfLenC, 19, offset g_dfCodeC, 7
+        mov eax, nlit
+        sub eax, 257
+        invoke DfEmit, eax, 5
+        mov eax, ndist
+        dec eax
+        invoke DfEmit, eax, 5
+        mov eax, hclen
+        sub eax, 4
+        invoke DfEmit, eax, 4
+        mov i, 0
+        .WHILE 1
+            mov ecx, hclen
+            .BREAK .IF i >= ecx
+            mov ecx, i
+            movzx eax, byte ptr g_zfClOrder[ecx]
+            movzx eax, byte ptr g_dfLenC[eax]
+            invoke DfEmit, eax, 3
+            inc i
+        .ENDW
+        mov i, 0
+        .WHILE 1
+            mov ecx, nRle
+            .BREAK .IF i >= ecx
+            mov ecx, i
+            movzx ebx, byte ptr g_dfRleSym[ecx]
+            movzx eax, word ptr g_dfCodeC[ebx * 2]
+            movzx edx, byte ptr g_dfLenC[ebx]
+            invoke DfEmit, eax, edx
+            mov ecx, i
+            movzx eax, byte ptr g_dfRleExtra[ecx]
+            .IF ebx == 16
+                invoke DfEmit, eax, 2
+            .ELSEIF ebx == 17
+                invoke DfEmit, eax, 3
+            .ELSEIF ebx == 18
+                invoke DfEmit, eax, 7
+            .ENDIF
+            inc i
+        .ENDW
+        mov pCodeL, offset g_dfCodeL
+        mov pLenL, offset g_dfLenL
+        mov pCodeD, offset g_dfCodeD
+        mov pLenD, offset g_dfLenD
+    .ELSE
+        or eax, 2                           ; BTYPE 01: fixed
+        invoke DfEmit, eax, 3
+        mov pCodeL, offset g_dfLitCode
+        mov pLenL, offset g_dfLitBits
+        mov pCodeD, offset g_dfDistCode
+        mov pLenD, 0                        ; every fixed distance code is five bits
+    .ENDIF
+    ; --- the tokens ---
+    mov esi, g_dfTok
+    mov i, 0
+    .WHILE g_dfErr == 0
+        mov ecx, g_dfTokN
+        .BREAK .IF i >= ecx
+        mov ecx, i
+        mov ebx, dword ptr [esi + ecx * 4]
+        .IF !(ebx & 80000000h)
+            mov edi, pCodeL
+            movzx eax, word ptr [edi + ebx * 2]
+            mov edi, pLenL
+            movzx edx, byte ptr [edi + ebx]
+            invoke DfEmit, eax, edx
+        .ELSE
+            mov tok, ebx
+            mov eax, ebx
+            shr eax, 26
+            and eax, 1Fh                    ; length symbol - 257
+            lea ecx, [eax + 257]
+            mov edi, pCodeL
+            movzx edx, word ptr [edi + ecx * 2]
+            mov edi, pLenL
+            movzx ecx, byte ptr [edi + ecx]
+            push eax
+            invoke DfEmit, edx, ecx
+            pop eax
+            movzx ecx, byte ptr g_zfLenExtra[eax]
+            .IF ecx != 0
+                movzx edx, word ptr g_zfLenBase[eax * 2]
+                mov eax, tok
+                shr eax, 16
+                and eax, 0FFh
+                add eax, 3
+                sub eax, edx
+                invoke DfEmit, eax, ecx
+            .ENDIF
+            mov eax, tok
+            and eax, 7FFFh
+            inc eax                         ; the distance
+            push eax
+            invoke DfDistSym, eax
+            pop edx
+            mov ebx, eax
+            mov edi, pCodeD
+            movzx eax, word ptr [edi + ebx * 2]
+            mov ecx, 5
+            .IF pLenD != 0
+                mov edi, pLenD
+                movzx ecx, byte ptr [edi + ebx]
+            .ENDIF
+            push edx
+            invoke DfEmit, eax, ecx
+            pop edx
+            movzx ecx, byte ptr g_zfDistExtra[ebx]
+            .IF ecx != 0
+                movzx eax, word ptr g_zfDistBase[ebx * 2]
+                sub edx, eax
+                invoke DfEmit, edx, ecx
+            .ENDIF
+        .ENDIF
+        inc i
+    .ENDW
+    mov edi, pCodeL                         ; end of block
+    movzx eax, word ptr [edi + 256 * 2]
+    mov edi, pLenL
+    movzx edx, byte ptr [edi + 256]
+    invoke DfEmit, eax, edx
+    ret
+DfEmitBlock ENDP
 
 ; Longest match against a known chain head; length in eax, distance in g_dfMDist
 DfMatchAt PROC USES esi edi ebx pos:DWORD, cand:DWORD
@@ -1524,6 +2157,9 @@ DfMatchAt ENDP
 ; One chunk as one fixed-Huffman block. The per-byte work - hash, chain insert,
 ; first-byte gate and literal emit - runs inline; procedure calls remain only
 ; for accepted matches and buffer flushes, which are rare on either extreme.
+; One chunk: find matches and collect tokens with their symbol counts, then
+; hand the block to DfEmitBlock, which picks the coding. The per-byte work -
+; hash, chain insert, first-byte gate and the token itself - stays inline.
 DfCompressChunk PROC USES esi edi ebx last:DWORD
     LOCAL mlen:DWORD
     LOCAL hashv:DWORD
@@ -1532,10 +2168,11 @@ DfCompressChunk PROC USES esi edi ebx last:DWORD
     xor eax, eax
     mov ecx, DF_HASHSZ
     rep stosd
-    mov eax, last
-    and eax, 1
-    or eax, 2
-    invoke DfEmit, eax, 3
+    mov edi, offset g_dfFreqL
+    mov ecx, 286 + 30
+    rep stosd
+    mov g_dfTokN, 0
+    mov g_dfExtraBits, 0
     mov esi, g_dfChunkPtr
     xor ebx, ebx                            ; position
     .WHILE g_dfErr == 0
@@ -1568,7 +2205,28 @@ DfCompressChunk PROC USES esi edi ebx last:DWORD
                         mov ecx, g_dfMDist
                         .IF eax > 3 || (eax == 3 && ecx <= 4096)
                             mov mlen, eax
-                            invoke DfPutMatch, mlen, g_dfMDist
+                            ; the match as a token, and its symbols counted
+                            invoke DfLenSym, mlen
+                            inc dword ptr g_dfFreqL[eax * 4 + 257 * 4]
+                            movzx ecx, byte ptr g_zfLenExtra[eax]
+                            add g_dfExtraBits, ecx
+                            shl eax, 26
+                            mov ecx, mlen
+                            sub ecx, 3
+                            shl ecx, 16
+                            or eax, ecx
+                            mov ecx, g_dfMDist
+                            dec ecx
+                            or eax, ecx
+                            or eax, 80000000h
+                            mov edi, g_dfTok
+                            mov ecx, g_dfTokN
+                            mov dword ptr [edi + ecx * 4], eax
+                            inc g_dfTokN
+                            invoke DfDistSym, g_dfMDist
+                            inc dword ptr g_dfFreqD[eax * 4]
+                            movzx ecx, byte ptr g_zfDistExtra[eax]
+                            add g_dfExtraBits, ecx
                             ; insert every covered position, inline
                             mov edx, ebx
                             add edx, mlen
@@ -1612,31 +2270,18 @@ DfCompressChunk PROC USES esi edi ebx last:DWORD
             mov edx, g_dfPrev
             mov dword ptr [edx + ebx * 4], ecx
         .ENDIF
-        ; literal, emitted inline: code into the accumulator, bytes drained as they fill
+        ; a literal token, counted
         movzx eax, byte ptr [esi + ebx]
-        mov ecx, g_dfBitCnt
-        movzx edx, word ptr g_dfLitCode[eax * 2]
-        shl edx, cl
-        or g_dfBitBuf, edx
-        movzx edx, byte ptr g_dfLitBits[eax]
-        add ecx, edx
-        mov g_dfBitCnt, ecx
-        .WHILE g_dfBitCnt >= 8
-            mov eax, g_dfOutPos
-            .IF eax >= DF_OUTBUF - 8
-                invoke DfFlushOut
-                mov eax, g_dfOutPos
-            .ENDIF
-            mov ecx, g_dfOut
-            mov edx, g_dfBitBuf
-            mov byte ptr [ecx + eax], dl
-            inc g_dfOutPos
-            shr g_dfBitBuf, 8
-            sub g_dfBitCnt, 8
-        .ENDW
+        inc dword ptr g_dfFreqL[eax * 4]
+        mov edi, g_dfTok
+        mov ecx, g_dfTokN
+        mov dword ptr [edi + ecx * 4], eax
+        inc g_dfTokN
         inc ebx
     .ENDW
-    invoke DfPutLit, 256                    ; end of block
+    .IF g_dfErr == 0
+        invoke DfEmitBlock, last
+    .ENDIF
     ret
 DfCompressChunk ENDP
 
@@ -1677,7 +2322,9 @@ GzCompressFile PROC USES ebx pszSrc:DWORD, pszDst:DWORD
     mov g_dfHead, eax
     invoke VfsAlloc, DF_CHUNK * 4
     mov g_dfPrev, eax
-    .IF g_dfChunkPtr == 0 || g_dfOut == 0 || g_dfHead == 0 || g_dfPrev == 0
+    invoke VfsAlloc, DF_CHUNK * 4 + 16
+    mov g_dfTok, eax
+    .IF g_dfChunkPtr == 0 || g_dfOut == 0 || g_dfHead == 0 || g_dfPrev == 0 || g_dfTok == 0
         jmp cleanup
     .ENDIF
     mov eax, hOut
@@ -1761,6 +2408,8 @@ cleanup:
     invoke VfsFreeMem, g_dfOut
     invoke VfsFreeMem, g_dfHead
     invoke VfsFreeMem, g_dfPrev
+    invoke VfsFreeMem, g_dfTok
+    mov g_dfTok, 0
     mov g_dfChunkPtr, 0
     mov g_dfOut, 0
     mov g_dfHead, 0

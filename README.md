@@ -74,8 +74,7 @@ pseudo-files: extraction writes real WAV files, and a double-click plays the tra
 
 ## Compression
 
-The exe carries its own DEFLATE (RFC 1951) codec - an inflate decoder and a fixed-Huffman
-compressor - because the built-in Windows compression APIs only speak their own framings
+The exe carries its own DEFLATE (RFC 1951) codec - an inflate decoder and a compressor - because the built-in Windows compression APIs only speak their own framings
 (MSZIP, XPRESS, LZMS), not the raw deflate streams these files hold. CRC-32 comes from
 ntdll, so no table lives in the image. Compressed images expand once to `%TEMP%\FoxImg\`
 and then open like any other image, the same way ECM does.
@@ -86,7 +85,7 @@ chunk by chunk - an ISZ may hold zlib and bzip2 blocks in one image.
 | Codec | Status | Used by |
 | --- | --- | --- |
 | DEFLATE (inflate) | Yes | .gz, .zip, .cso, .gcz, .dax, .jso, .isz, .pbp (raw and zlib framing, auto-detected) |
-| DEFLATE (compress) | Yes | Save As gzip ISO (fixed Huffman, 32 KB window) |
+| DEFLATE (compress) | Yes | Save As gzip ISO: per block the cheaper of dynamic Huffman, fixed, or stored; 32 KB window |
 | LZMA | Yes | CHD hunks; DAA v0x110 and LZMA-compressed RVZ later |
 | bzip2 | Yes | .bz2, ISZ and DMG chunks; bzip2-compressed RVZ later |
 | Zstandard | Yes | RVZ groups and tables |
