@@ -2148,13 +2148,37 @@ DfMatchAt PROC USES esi edi ebx pos:DWORD, cand:DWORD
         add esi, ebx
         mov edi, g_dfChunkPtr
         add edi, pos
+        ; a candidate that cannot beat the best so far is not worth comparing
+        mov ecx, best
+        .IF ecx < maxLen
+            mov al, byte ptr [esi + ecx]
+            .IF al != byte ptr [edi + ecx]
+                jmp next_cand
+            .ENDIF
+        .ENDIF
+        ; four bytes at a time; the first differing bit locates the mismatch
         xor ecx, ecx
+        mov edx, maxLen
+        sub edx, 3
+        .WHILE edx != 0 && !(edx & 80000000h)
+            mov eax, dword ptr [esi + ecx]
+            xor eax, dword ptr [edi + ecx]
+            .IF eax != 0
+                bsf eax, eax
+                shr eax, 3
+                add ecx, eax
+                jmp cmp_done
+            .ENDIF
+            add ecx, 4
+            sub edx, 4
+        .ENDW
         mov edx, maxLen
         .WHILE ecx < edx
             mov al, byte ptr [esi + ecx]
             .BREAK .IF al != byte ptr [edi + ecx]
             inc ecx
         .ENDW
+cmp_done:
         .IF ecx > best
             mov best, ecx
             mov eax, pos
@@ -2163,6 +2187,7 @@ DfMatchAt PROC USES esi edi ebx pos:DWORD, cand:DWORD
             mov eax, maxLen
             .BREAK .IF ecx == eax
         .ENDIF
+next_cand:
         mov ecx, g_dfPrev
         mov eax, dword ptr [ecx + ebx * 4]
         mov cand, eax
