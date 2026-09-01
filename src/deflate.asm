@@ -335,7 +335,9 @@ ZfBuild PROC USES esi edi ebx pCnt:DWORD, pSym:DWORD, pLens:DWORD, n:DWORD, pLut
         inc word ptr [ecx + eax * 2]
         inc ebx
     .ENDW
-    ; over-subscribed set of lengths?
+    ; over-subscribed set of lengths? and, as zlib insists, not incomplete either -
+    ; the one incomplete set the format allows is a distance table with a single
+    ; one-bit code, and a table with no codes at all is left to fail on use
     mov eax, 1
     mov ebx, 1
     .WHILE ebx <= 15
@@ -349,6 +351,13 @@ ZfBuild PROC USES esi edi ebx pCnt:DWORD, pSym:DWORD, pLens:DWORD, n:DWORD, pLut
         .ENDIF
         inc ebx
     .ENDW
+    .IF eax != 0 && eax != 8000h
+        mov ecx, pCnt
+        .IF pLut != offset g_zfDLut || word ptr [ecx + 2] != 1 || eax != 4000h
+            mov eax, 1
+            ret
+        .ENDIF
+    .ENDIF
     ; first symbol slot for each length
     mov word ptr offs[2], 0
     mov ebx, 1
@@ -615,11 +624,13 @@ ZfInitFixed PROC USES edi
     mov ecx, 8
     rep stosb
     invoke ZfBuild, offset g_zfFixLC, offset g_zfFixLS, offset g_zfLens, 288, offset g_zfFixLLut
+    ; 32 five-bit distance codes, as the format defines them: codes 30 and 31 never
+    ; occur (ZfCodes rejects them) but they make the set complete
     mov edi, offset g_zfLens
     mov al, 5
-    mov ecx, 30
+    mov ecx, 32
     rep stosb
-    invoke ZfBuild, offset g_zfFixDC, offset g_zfFixDS, offset g_zfLens, 30, offset g_zfFixDLut
+    invoke ZfBuild, offset g_zfFixDC, offset g_zfFixDS, offset g_zfLens, 32, offset g_zfFixDLut
     mov g_zfFixInit, 1
     ret
 ZfInitFixed ENDP
@@ -1509,9 +1520,16 @@ DfBuildLengths PROC USES esi edi ebx pFreq:DWORD, n:DWORD, pLen:DWORD, maxBits:D
         ret
     .ENDIF
     .IF nUsed == 1
+        ; a lone symbol gets a one-bit code, and so does a neighbour, so the set
+        ; is complete - strict decoders reject a lone code outside a distance table
         movzx eax, word ptr g_dfSortSym[0]
         mov edi, pLen
-        mov byte ptr [edi + eax], 1         ; a lone symbol still needs a one-bit code
+        mov byte ptr [edi + eax], 1
+        xor ecx, ecx
+        .IF eax == 0
+            inc ecx
+        .ENDIF
+        mov byte ptr [edi + ecx], 1
         ret
     .ENDIF
     ; leaves are nodes 0..nUsed-1 (sorted), internal nodes follow as they are made
@@ -1847,7 +1865,7 @@ DfEmitBlock PROC USES esi edi ebx last:DWORD
         inc ecx
     .ENDW
     .IF eax == 0
-        mov byte ptr g_dfLenD[0], 1
+        mov word ptr g_dfLenD[0], 0101h     ; two one-bit codes: a complete, harmless table
     .ENDIF
     mov nlit, 257
     mov ecx, 285
