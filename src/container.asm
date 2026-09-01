@@ -1540,10 +1540,7 @@ g_ctExpTable    dd offset szExtGz,   offset GzExpandFile,  offset szCtGz,  0
 CtOpenVia PROC pszPath:DWORD, pfnExpand:DWORD, pszName:DWORD, secSize:DWORD
     LOCAL szOut[MAX_PATH]:WORD
     invoke CtTempOut, addr szOut, pszPath
-    lea eax, szOut
-    push eax
-    push pszPath
-    call pfnExpand
+    invoke ZfRunExpander, pszPath, addr szOut, pfnExpand
     .IF eax == 0
         ret
     .ENDIF

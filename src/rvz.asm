@@ -228,15 +228,8 @@ RvzUnpack PROC USES esi edi ebx pSrc:DWORD, cbSrc:DWORD, pDst:DWORD, cbDst:DWORD
 RvzUnpack ENDP
 
 ; ---------------------------------------------------------------------------
-; Big-endian helpers on a buffer
+; Big-endian helpers on a buffer (BE32 is opera.asm's)
 ; ---------------------------------------------------------------------------
-RvzBE32 PROC p:DWORD
-    mov eax, p
-    mov eax, dword ptr [eax]
-    bswap eax
-    ret
-RvzBE32 ENDP
-
 ; 64-bit big-endian into edx:eax
 RvzBE64 PROC p:DWORD
     mov ecx, p
@@ -269,8 +262,7 @@ RvzZeros ENDP
 ; ---------------------------------------------------------------------------
 ; Expand an RVZ to a plain GameCube disc image
 ; ---------------------------------------------------------------------------
-RvzExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
-    LOCAL hIn:DWORD
+RvzExpandFile PROC USES esi edi ebx hIn:DWORD, pszDst:DWORD
     LOCAL hOut:DWORD
     LOCAL h1[RVZ_H1]:BYTE
     LOCAL h2[RVZ_H2]:BYTE
@@ -317,18 +309,11 @@ RvzExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
     LOCAL tmp:DWORD
     LOCAL ok:DWORD
     mov ok, FALSE
-    mov hOut, INVALID_HANDLE_VALUE
     mov pC, 0
     mov pD, 0
     mov pG, 0
     mov pRaw, 0
     mov pGrp, 0
-    invoke FileOpenReadSeq, pszSrc
-    .IF eax == INVALID_HANDLE_VALUE
-        xor eax, eax
-        ret
-    .ENDIF
-    mov hIn, eax
 
     ; --- headers ---
     invoke FileReadAt, hIn, 0, 0, addr h1, RVZ_H1
@@ -338,7 +323,7 @@ RvzExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
     invoke RvzBE64, addr h1[24h]        ; iso_file_size
     mov totLo, eax
     mov totHi, edx
-    invoke RvzBE32, addr h1[0Ch]        ; header 2 size
+    invoke BE32, addr h1[0Ch]        ; header 2 size
     .IF eax < 0D4h
         jmp done
     .ENDIF
@@ -346,15 +331,15 @@ RvzExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
     .IF eax < 0D4h
         jmp done
     .ENDIF
-    invoke RvzBE32, addr h2[0]          ; disc type: 1 GameCube, 2 Wii
+    invoke BE32, addr h2[0]          ; disc type: 1 GameCube, 2 Wii
     .IF eax != 1
         jmp done
     .ENDIF
-    invoke RvzBE32, addr h2[4]          ; compression: 5 is Zstandard
+    invoke BE32, addr h2[4]          ; compression: 5 is Zstandard
     .IF eax != 5
         jmp done
     .ENDIF
-    invoke RvzBE32, addr h2[0Ch]
+    invoke BE32, addr h2[0Ch]
     mov chunk, eax
     .IF eax < RVZ_SECTOR || eax > RVZ_CHUNK_MAX
         jmp done
@@ -363,11 +348,11 @@ RvzExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
     .IF !ZERO?
         jmp done
     .ENDIF
-    invoke RvzBE32, addr h2[90h]        ; partitions: none on a GameCube disc
+    invoke BE32, addr h2[90h]        ; partitions: none on a GameCube disc
     .IF eax != 0
         jmp done
     .ENDIF
-    invoke RvzBE32, addr h2[0B4h]
+    invoke BE32, addr h2[0B4h]
     mov nRaw, eax
     .IF eax == 0 || eax > 65536
         jmp done
@@ -375,9 +360,9 @@ RvzExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
     invoke RvzBE64, addr h2[0B8h]
     mov rawOffLo, eax
     mov rawOffHi, edx
-    invoke RvzBE32, addr h2[0C0h]
+    invoke BE32, addr h2[0C0h]
     mov rawCb, eax
-    invoke RvzBE32, addr h2[0C4h]
+    invoke BE32, addr h2[0C4h]
     mov nGrp, eax
     .IF eax == 0 || eax > 4000000h
         jmp done
@@ -385,7 +370,7 @@ RvzExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
     invoke RvzBE64, addr h2[0C8h]
     mov grpOffLo, eax
     mov grpOffHi, edx
-    invoke RvzBE32, addr h2[0D0h]
+    invoke BE32, addr h2[0D0h]
     mov grpCb, eax
     .IF rawCb > RVZ_TBL_MAX || grpCb > RVZ_TBL_MAX
         jmp done
@@ -489,10 +474,10 @@ RvzExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
         mov entSizeLo, eax
         mov entSizeHi, edx
         lea eax, [esi + 16]
-        invoke RvzBE32, eax
+        invoke BE32, eax
         mov gIndex, eax
         lea eax, [esi + 20]
-        invoke RvzBE32, eax
+        invoke BE32, eax
         mov gCount, eax
         mov eax, entSizeLo
         or eax, entSizeHi
@@ -548,21 +533,21 @@ RvzExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
             imul eax, RVZ_GRP_ENTRY
             add eax, pGrp
             mov ebx, eax
-            invoke RvzBE32, ebx
+            invoke BE32, ebx
             mov edx, eax
             shr edx, 30
             shl eax, 2
             mov dOffLo, eax
             mov dOffHi, edx
             lea eax, [ebx + 4]
-            invoke RvzBE32, eax
+            invoke BE32, eax
             mov edx, eax
             shr edx, 31
             mov isComp, edx
             and eax, 7FFFFFFFh
             mov dSize, eax
             lea eax, [ebx + 8]
-            invoke RvzBE32, eax
+            invoke BE32, eax
             mov packed, eax
             ; where in the group this entry's bytes begin
             mov skipNow, 0
@@ -655,13 +640,12 @@ RvzExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
         mov ok, TRUE
     .ENDIF
 done:
-    invoke ZfExpandFree
     invoke VfsFreeMem, pC
     invoke VfsFreeMem, pD
     invoke VfsFreeMem, pG
     invoke VfsFreeMem, pRaw
     invoke VfsFreeMem, pGrp
-    invoke ZfClosePair, ok, hIn, hOut, pszDst
+    mov eax, ok
     ret
 RvzExpandFile ENDP
 

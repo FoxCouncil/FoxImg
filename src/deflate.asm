@@ -821,11 +821,13 @@ ZfBeginOut PROC pszDst:DWORD, hIn:DWORD, cbLo:DWORD, cbHi:DWORD
     ret
 ZfBeginOut ENDP
 
-; Common expander tail: close both files, drop the output when the expansion failed
-ZfClosePair PROC okv:DWORD, hIn:DWORD, hOut:DWORD, pszDst:DWORD
+; Common expander tail: close both files, drop the output when the expansion failed.
+; The output handle is the session's own (ZfExpandInit records it), so a body that
+; never got that far leaves it at INVALID_HANDLE_VALUE and nothing is deleted.
+ZfClosePair PROC okv:DWORD, hIn:DWORD, pszDst:DWORD
     invoke CloseHandle, hIn
-    .IF hOut != INVALID_HANDLE_VALUE
-        invoke CloseHandle, hOut
+    .IF g_zfHOut != INVALID_HANDLE_VALUE
+        invoke CloseHandle, g_zfHOut
         .IF okv == 0
             invoke DeleteFileW, pszDst
         .ENDIF
@@ -834,26 +836,39 @@ ZfClosePair PROC okv:DWORD, hIn:DWORD, hOut:DWORD, pszDst:DWORD
     ret
 ZfClosePair ENDP
 
-; ---------------------------------------------------------------------------
-; gzip (RFC 1952): header, one deflate stream, CRC-32 + size trailer
-; ---------------------------------------------------------------------------
-GzExpandFile PROC USES ebx pszSrc:DWORD, pszDst:DWORD
+; Run one expander body: open the source, hand it the handle, then free the
+; session and close both files. Every container reader shares this, so the
+; bodies carry only their own parsing.
+ZfRunExpander PROC pszSrc:DWORD, pszDst:DWORD, pfnBody:DWORD
     LOCAL hIn:DWORD
-    LOCAL hOut:DWORD
-    LOCAL flg:DWORD
-    LOCAL ok:DWORD
-    mov ok, FALSE
+    mov g_zfHOut, INVALID_HANDLE_VALUE
     invoke FileOpenReadSeq, pszSrc
     .IF eax == INVALID_HANDLE_VALUE
         xor eax, eax
         ret
     .ENDIF
     mov hIn, eax
+    push pszDst
+    push hIn
+    call pfnBody
+    push eax
+    invoke ZfExpandFree
+    pop eax
+    invoke ZfClosePair, eax, hIn, pszDst
+    ret
+ZfRunExpander ENDP
+
+; ---------------------------------------------------------------------------
+; gzip (RFC 1952): header, one deflate stream, CRC-32 + size trailer
+; ---------------------------------------------------------------------------
+GzExpandFile PROC USES ebx hIn:DWORD, pszDst:DWORD
+    LOCAL hOut:DWORD
+    LOCAL flg:DWORD
+    LOCAL ok:DWORD
+    mov ok, FALSE
     invoke CreateFileW, pszDst, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL
     .IF eax == INVALID_HANDLE_VALUE
-        invoke CloseHandle, hIn
-        xor eax, eax
-        ret
+        jmp done
     .ENDIF
     mov hOut, eax
     invoke ZfExpandInit, hIn, hOut
@@ -927,8 +942,7 @@ GzExpandFile PROC USES ebx pszSrc:DWORD, pszDst:DWORD
     .ENDIF
     mov ok, TRUE
 done:
-    invoke ZfExpandFree
-    invoke ZfClosePair, ok, hIn, hOut, pszDst
+    mov eax, ok
     ret
 GzExpandFile ENDP
 
@@ -938,8 +952,7 @@ GzExpandFile ENDP
 ZIP_TAILMAX     equ 65558               ; EOCD plus the longest possible comment
 ZIP_CDMAX       equ 16 * 1024 * 1024
 
-ZipExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
-    LOCAL hIn:DWORD
+ZipExpandFile PROC USES esi edi ebx hIn:DWORD, pszDst:DWORD
     LOCAL hOut:DWORD
     LOCAL sizeLo:DWORD
     LOCAL sizeHi:DWORD
@@ -961,13 +974,6 @@ ZipExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
 
     mov ok, FALSE
     mov haveBest, FALSE
-    mov hOut, INVALID_HANDLE_VALUE
-    invoke FileOpenReadSeq, pszSrc
-    .IF eax == INVALID_HANDLE_VALUE
-        xor eax, eax
-        ret
-    .ENDIF
-    mov hIn, eax
     invoke FileSize64, hIn, addr sizeLo, addr sizeHi
     mov eax, ZIP_TAILMAX
     .IF sizeHi == 0 && sizeLo < eax
@@ -1090,9 +1096,8 @@ free_cd:
             mov ok, TRUE
         .ENDIF
     .ENDIF
-    invoke ZfExpandFree
 close_in:
-    invoke ZfClosePair, ok, hIn, hOut, pszDst
+    mov eax, ok
     ret
 free_tail:
     invoke VfsFreeMem, pTail
@@ -1105,8 +1110,7 @@ ZipExpandFile ENDP
 ; ---------------------------------------------------------------------------
 CSO_IDXMAX      equ 64 * 1024 * 1024
 
-CsoExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
-    LOCAL hIn:DWORD
+CsoExpandFile PROC USES esi ebx hIn:DWORD, pszDst:DWORD
     LOCAL hOut:DWORD
     LOCAL hdr[24]:BYTE
     LOCAL blkSize:DWORD
@@ -1130,14 +1134,7 @@ CsoExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
     LOCAL ok:DWORD
 
     mov ok, FALSE
-    mov hOut, INVALID_HANDLE_VALUE
     mov pIdx, 0
-    invoke FileOpenReadSeq, pszSrc
-    .IF eax == INVALID_HANDLE_VALUE
-        xor eax, eax
-        ret
-    .ENDIF
-    mov hIn, eax
     invoke FileReadAt, hIn, 0, 0, addr hdr, 24
     .IF eax != 24
         jmp done
@@ -1285,10 +1282,9 @@ CsoExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
     ; success when everything the header promised came out
     invoke ZfCheckTotal, totLo, totHi
     mov ok, eax
-    invoke ZfExpandFree
 done:
     invoke VfsFreeMem, pIdx
-    invoke ZfClosePair, ok, hIn, hOut, pszDst
+    mov eax, ok
     ret
 CsoExpandFile ENDP
 
@@ -2206,8 +2202,7 @@ LzoBlock ENDP
 ; ---------------------------------------------------------------------------
 GCZ_IDXMAX      equ 64 * 1024 * 1024
 
-GczExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
-    LOCAL hIn:DWORD
+GczExpandFile PROC USES esi ebx hIn:DWORD, pszDst:DWORD
     LOCAL hOut:DWORD
     LOCAL hdr[32]:BYTE
     LOCAL blkSize:DWORD
@@ -2230,14 +2225,7 @@ GczExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
     LOCAL ok:DWORD
 
     mov ok, FALSE
-    mov hOut, INVALID_HANDLE_VALUE
     mov pIdx, 0
-    invoke FileOpenReadSeq, pszSrc
-    .IF eax == INVALID_HANDLE_VALUE
-        xor eax, eax
-        ret
-    .ENDIF
-    mov hIn, eax
     invoke FileReadAt, hIn, 0, 0, addr hdr, 32
     .IF eax != 32 || dword ptr hdr[0] != 0B10BC001h
         jmp done
@@ -2325,10 +2313,9 @@ GczExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
     invoke ZfOutFinal
     invoke ZfCheckTotal, totLo, totHi
     mov ok, eax
-    invoke ZfExpandFree
 done:
     invoke VfsFreeMem, pIdx
-    invoke ZfClosePair, ok, hIn, hOut, pszDst
+    mov eax, ok
     ret
 GczExpandFile ENDP
 
@@ -2339,8 +2326,7 @@ GczExpandFile ENDP
 DAX_FRAME       equ 2000h
 DAX_IDXMAX      equ 32 * 1024 * 1024
 
-DaxExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
-    LOCAL hIn:DWORD
+DaxExpandFile PROC USES esi ebx hIn:DWORD, pszDst:DWORD
     LOCAL hOut:DWORD
     LOCAL hdr[32]:BYTE
     LOCAL totCb:DWORD
@@ -2357,15 +2343,8 @@ DaxExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
     LOCAL ok:DWORD
 
     mov ok, FALSE
-    mov hOut, INVALID_HANDLE_VALUE
     mov pOffs, 0
     mov pNc, 0
-    invoke FileOpenReadSeq, pszSrc
-    .IF eax == INVALID_HANDLE_VALUE
-        xor eax, eax
-        ret
-    .ENDIF
-    mov hIn, eax
     invoke FileReadAt, hIn, 0, 0, addr hdr, 32
     .IF eax != 32 || dword ptr hdr[0] != 00584144h      ; "DAX\0"
         jmp done
@@ -2464,11 +2443,10 @@ DaxExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
     invoke ZfOutFinal
     invoke ZfCheckTotal, totCb, 0
     mov ok, eax
-    invoke ZfExpandFree
 done:
     invoke VfsFreeMem, pOffs
     invoke VfsFreeMem, pNc
-    invoke ZfClosePair, ok, hIn, hOut, pszDst
+    mov eax, ok
     ret
 DaxExpandFile ENDP
 
@@ -2479,8 +2457,7 @@ DaxExpandFile ENDP
 ; ---------------------------------------------------------------------------
 JSO_IDXMAX      equ 32 * 1024 * 1024
 
-JsoExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
-    LOCAL hIn:DWORD
+JsoExpandFile PROC USES esi ebx hIn:DWORD, pszDst:DWORD
     LOCAL hOut:DWORD
     LOCAL hdr[48]:BYTE
     LOCAL blkSize:DWORD
@@ -2498,14 +2475,7 @@ JsoExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
     LOCAL ok:DWORD
 
     mov ok, FALSE
-    mov hOut, INVALID_HANDLE_VALUE
     mov pIdx, 0
-    invoke FileOpenReadSeq, pszSrc
-    .IF eax == INVALID_HANDLE_VALUE
-        xor eax, eax
-        ret
-    .ENDIF
-    mov hIn, eax
     invoke FileReadAt, hIn, 0, 0, addr hdr, 48
     .IF eax != 48 || dword ptr hdr[0] != 4F53494Ah      ; "JISO"
         jmp done
@@ -2588,10 +2558,9 @@ JsoExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
     invoke ZfOutFinal
     invoke ZfCheckTotal, totCb, 0
     mov ok, eax
-    invoke ZfExpandFree
 done:
     invoke VfsFreeMem, pIdx
-    invoke ZfClosePair, ok, hIn, hOut, pszDst
+    mov eax, ok
     ret
 JsoExpandFile ENDP
 
@@ -2602,8 +2571,7 @@ JsoExpandFile ENDP
 ; ---------------------------------------------------------------------------
 ISZ_IDXMAX      equ 64 * 1024 * 1024
 
-IszExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
-    LOCAL hIn:DWORD
+IszExpandFile PROC USES esi ebx hIn:DWORD, pszDst:DWORD
     LOCAL hOut:DWORD
     LOCAL hdr[48]:BYTE
     LOCAL blkSize:DWORD
@@ -2626,14 +2594,7 @@ IszExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
     LOCAL ok:DWORD
 
     mov ok, FALSE
-    mov hOut, INVALID_HANDLE_VALUE
     mov pIdx, 0
-    invoke FileOpenReadSeq, pszSrc
-    .IF eax == INVALID_HANDLE_VALUE
-        xor eax, eax
-        ret
-    .ENDIF
-    mov hIn, eax
     invoke FileReadAt, hIn, 0, 0, addr hdr, 48
     .IF eax != 48 || dword ptr hdr[0] != 215A7349h      ; "IsZ!"
         jmp done
@@ -2761,10 +2722,9 @@ finish:
     invoke ZfOutFinal
     invoke ZfCheckTotal, totLo, totHi
     mov ok, eax
-    invoke ZfExpandFree
 done:
     invoke VfsFreeMem, pIdx
-    invoke ZfClosePair, ok, hIn, hOut, pszDst
+    mov eax, ok
     ret
 IszExpandFile ENDP
 
@@ -2775,8 +2735,7 @@ IszExpandFile ENDP
 ; ---------------------------------------------------------------------------
 DAA_IDXMAX      equ 16 * 1024 * 1024
 
-DaaExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
-    LOCAL hIn:DWORD
+DaaExpandFile PROC USES esi ebx hIn:DWORD, pszDst:DWORD
     LOCAL hOut:DWORD
     LOCAL hdr[76]:BYTE
     LOCAL chunkSize:DWORD
@@ -2792,14 +2751,7 @@ DaaExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
     LOCAL ok:DWORD
 
     mov ok, FALSE
-    mov hOut, INVALID_HANDLE_VALUE
     mov pIdx, 0
-    invoke FileOpenReadSeq, pszSrc
-    .IF eax == INVALID_HANDLE_VALUE
-        xor eax, eax
-        ret
-    .ENDIF
-    mov hIn, eax
     invoke FileReadAt, hIn, 0, 0, addr hdr, 76
     .IF eax != 76 || dword ptr hdr[0] != 00414144h      ; "DAA\0" (rejects DAA VOL parts)
         jmp done
@@ -2877,10 +2829,9 @@ DaaExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
     invoke ZfOutFinal
     invoke ZfCheckTotal, totLo, totHi
     mov ok, eax
-    invoke ZfExpandFree
 done:
     invoke VfsFreeMem, pIdx
-    invoke ZfClosePair, ok, hIn, hOut, pszDst
+    mov eax, ok
     ret
 DaaExpandFile ENDP
 
@@ -3829,8 +3780,7 @@ ChdCdTracks PROC USES esi edi ebx hIn:DWORD, pHdr:DWORD
     ret
 ChdCdTracks ENDP
 
-ChdExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
-    LOCAL hIn:DWORD
+ChdExpandFile PROC USES esi edi ebx hIn:DWORD, pszDst:DWORD
     LOCAL hOut:DWORD
     LOCAL hdr[124]:BYTE
     LOCAL comps[4]:DWORD
@@ -3865,19 +3815,12 @@ ChdExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
     LOCAL ok:DWORD
 
     mov ok, FALSE
-    mov hOut, INVALID_HANDLE_VALUE
     mov pBits, 0
     mov pMap, 0
     mov pScratch, 0
     mov haveLzma, 0
     mov haveFlac, 0
     mov isCd, 0
-    invoke FileOpenReadSeq, pszSrc
-    .IF eax == INVALID_HANDLE_VALUE
-        xor eax, eax
-        ret
-    .ENDIF
-    mov hIn, eax
     invoke FileReadAt, hIn, 0, 0, addr hdr, 124
     .IF eax != 124
         jmp done
@@ -4325,7 +4268,6 @@ ChdExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
     invoke ZfOutFinal
     invoke ZfCheckTotal, totLo, totHi
     mov ok, eax
-    invoke ZfExpandFree
 done:
     .IF haveLzma != 0
         invoke LzmaFree
@@ -4336,7 +4278,7 @@ done:
     invoke VfsFreeMem, pBits
     invoke VfsFreeMem, pMap
     invoke VfsFreeMem, pScratch
-    invoke ZfClosePair, ok, hIn, hOut, pszDst
+    mov eax, ok
     ret
 ChdExpandFile ENDP
 
@@ -4968,8 +4910,7 @@ FlacDecodeStream ENDP
 ; ---------------------------------------------------------------------------
 UIF_BLKMAX      equ 40000
 
-UifExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
-    LOCAL hIn:DWORD
+UifExpandFile PROC USES esi edi ebx hIn:DWORD, pszDst:DWORD
     LOCAL hOut:DWORD
     LOCAL sizeLo:DWORD
     LOCAL sizeHi:DWORD
@@ -4985,14 +4926,7 @@ UifExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
     LOCAL ok:DWORD
 
     mov ok, FALSE
-    mov hOut, INVALID_HANDLE_VALUE
     mov pTbl, 0
-    invoke FileOpenReadSeq, pszSrc
-    .IF eax == INVALID_HANDLE_VALUE
-        xor eax, eax
-        ret
-    .ENDIF
-    mov hIn, eax
     invoke FileSize64, hIn, addr sizeLo, addr sizeHi
     mov eax, sizeLo
     sub eax, 64
@@ -5116,10 +5050,9 @@ UifExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
     invoke ZfOutFinal
     invoke ZfCheckTotal, totLo, totHi
     mov ok, eax
-    invoke ZfExpandFree
 done:
     invoke VfsFreeMem, pTbl
-    invoke ZfClosePair, ok, hIn, hOut, pszDst
+    mov eax, ok
     ret
 UifExpandFile ENDP
 
@@ -5183,8 +5116,7 @@ DmgB64 PROC USES esi edi ebx pSrc:DWORD, cbSrc:DWORD, pDst:DWORD, cbMax:DWORD
     ret
 DmgB64 ENDP
 
-DmgExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
-    LOCAL hIn:DWORD
+DmgExpandFile PROC USES esi edi ebx hIn:DWORD, pszDst:DWORD
     LOCAL hOut:DWORD
     LOCAL sizeLo:DWORD
     LOCAL sizeHi:DWORD
@@ -5212,16 +5144,9 @@ DmgExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
     LOCAL ok:DWORD
 
     mov ok, FALSE
-    mov hOut, INVALID_HANDLE_VALUE
     mov pXml, 0
     mov pMish, 0
     mov produced, 0
-    invoke FileOpenReadSeq, pszSrc
-    .IF eax == INVALID_HANDLE_VALUE
-        xor eax, eax
-        ret
-    .ENDIF
-    mov hIn, eax
     invoke FileSize64, hIn, addr sizeLo, addr sizeHi
     mov eax, sizeLo
     sub eax, 512
@@ -5409,11 +5334,10 @@ DmgExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
     .IF g_zfErr == 0 && produced != 0
         mov ok, TRUE
     .ENDIF
-    invoke ZfExpandFree
 done:
     invoke VfsFreeMem, pXml
     invoke VfsFreeMem, pMish
-    invoke ZfClosePair, ok, hIn, hOut, pszDst
+    mov eax, ok
     ret
 DmgExpandFile ENDP
 
@@ -5422,18 +5346,10 @@ DmgExpandFile ENDP
 ; ---------------------------------------------------------------------------
 ; The stream carries no uncompressed size, so the output cannot be reserved
 ; up front the way the indexed containers do.
-BzExpandFile PROC USES ebx pszSrc:DWORD, pszDst:DWORD
-    LOCAL hIn:DWORD
+BzExpandFile PROC USES ebx hIn:DWORD, pszDst:DWORD
     LOCAL hOut:DWORD
     LOCAL ok:DWORD
     mov ok, FALSE
-    mov hOut, INVALID_HANDLE_VALUE
-    invoke FileOpenReadSeq, pszSrc
-    .IF eax == INVALID_HANDLE_VALUE
-        xor eax, eax
-        ret
-    .ENDIF
-    mov hIn, eax
     invoke ZfBeginOut, pszDst, hIn, 0, 0
     .IF eax == INVALID_HANDLE_VALUE
         jmp done
@@ -5449,8 +5365,7 @@ BzExpandFile PROC USES ebx pszSrc:DWORD, pszDst:DWORD
         mov ok, TRUE
     .ENDIF
 done:
-    invoke ZfExpandFree
-    invoke ZfClosePair, ok, hIn, hOut, pszDst
+    mov eax, ok
     ret
 BzExpandFile ENDP
 
@@ -5502,8 +5417,7 @@ PbpBlock PROC USES esi pIdx:DWORD, disc:DWORD, idx:DWORD
     ret
 PbpBlock ENDP
 
-PbpExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
-    LOCAL hIn:DWORD
+PbpExpandFile PROC USES esi edi ebx hIn:DWORD, pszDst:DWORD
     LOCAL hOut:DWORD
     LOCAL hdr[40]:BYTE
     LOCAL pos[5]:DWORD
@@ -5519,14 +5433,7 @@ PbpExpandFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
     LOCAL tmp:DWORD
     LOCAL ok:DWORD
     mov ok, FALSE
-    mov hOut, INVALID_HANDLE_VALUE
     mov pIdx, 0
-    invoke FileOpenReadSeq, pszSrc
-    .IF eax == INVALID_HANDLE_VALUE
-        xor eax, eax
-        ret
-    .ENDIF
-    mov hIn, eax
     invoke FileReadAt, hIn, 0, 0, addr hdr, 40
     .IF eax != 40 || dword ptr hdr[0] != PBP_MAGIC
         jmp done
@@ -5670,9 +5577,8 @@ pbp_keepCap:
     .ENDIF
     mov ok, TRUE
 done:
-    invoke ZfExpandFree
     invoke VfsFreeMem, pIdx
-    invoke ZfClosePair, ok, hIn, hOut, pszDst
+    mov eax, ok
     ret
 PbpExpandFile ENDP
 

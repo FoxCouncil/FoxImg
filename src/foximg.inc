@@ -1149,6 +1149,7 @@ BzFree              PROTO                      ; release the block buffer betwee
 ; the pieces of the deflate session bzip2.asm shares: same input, same output,
 ; same sticky error flag, so the two codecs stay interchangeable to a caller
 EXTERNDEF g_zfErr:DWORD
+EXTERNDEF g_zfHOut:DWORD
 ZfInByte            PROTO                      ; next input byte in eax, sets g_zfErr at the end
 ZfPutB              PROTO :DWORD               ; one byte to the output buffer
 ZfPutMem            PROTO :DWORD,:DWORD        ; pSrc, cb
@@ -1156,7 +1157,8 @@ ZfPutZeros          PROTO :DWORD               ; cb
 ZfBeginOut          PROTO :DWORD,:DWORD,:DWORD,:DWORD  ; pszDst, hIn, cbLo, cbHi -> hOut or INVALID_HANDLE_VALUE
 ZfOutFinal          PROTO
 ZfExpandFree        PROTO
-ZfClosePair         PROTO :DWORD,:DWORD,:DWORD,:DWORD  ; ok, hIn, hOut, pszDst -> ok
+ZfClosePair         PROTO :DWORD,:DWORD,:DWORD  ; ok, hIn, pszDst -> ok (closes the session's output)
+ZfRunExpander       PROTO :DWORD,:DWORD,:DWORD  ; pszSrc, pszDst, body(hIn, pszDst) -> BOOL
 GzCompressFile      PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL; worker progress + Cancel
 EXTERNDEF g_saveGzip:DWORD                      ; save target ends in .gz: worker gzips the image
 
@@ -1164,6 +1166,7 @@ EXTERNDEF g_saveGzip:DWORD                      ; save target ends in .gz: worke
 ; Optical containers (container.asm): NRG, MDS/MDF, CCD/IMG, GDI, TOC, generic scan
 ; ---------------------------------------------------------------------------
 BSwap32             PROTO :DWORD                ; big-endian dword swap (container.asm)
+BE32                PROTO :DWORD                ; big-endian dword at a pointer (opera.asm)
 
 ; ---------------------------------------------------------------------------
 ; CD audio (audio.asm): track table filled by containers, WAV serving, playback
