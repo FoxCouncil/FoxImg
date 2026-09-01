@@ -1116,6 +1116,8 @@ WSTR szCtDmg, <DMG>
 WSTR szExtDmg, <.dmg>
 WSTR szCtPbp, <PBP>
 WSTR szExtPbp, <.pbp>
+WSTR szCtBz2, <bzip2>
+WSTR szExtBz2, <.bz2>
 WSTR szExtGcz, <.gcz>
 WSTR szExtDax, <.dax>
 WSTR szExtZso, <.zso>
@@ -1526,6 +1528,7 @@ g_ctExpTable    dd offset szExtGz,   offset GzExpandFile,  offset szCtGz,  0
                 dd offset szExtUif,  offset UifExpandFile, offset szCtUif, 0
                 dd offset szExtDmg,  offset DmgExpandFile, offset szCtDmg, 0
                 dd offset szExtPbp,  offset PbpExpandFile, offset szCtPbp, 0
+                dd offset szExtBz2,  offset BzExpandFile,  offset szCtBz2, 0
                 dd 0
 
 .code

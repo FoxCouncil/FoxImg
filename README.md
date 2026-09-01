@@ -45,6 +45,7 @@ The program is one small executable with no runtime dependencies.
 | 3DO | .iso .cue (Opera) | Yes | No | Volume label, directory chains, copies |
 | CD-i | .iso .bin | Yes | No | Green Book descriptors beside CD001 |
 | gzip | .iso.gz .gz | Yes | Yes | Any image inside; Save As writes a gzip ISO |
+| bzip2 | .iso.bz2 .bz2 | Yes | No | Any image inside |
 | zip | .zip | Yes | No | Largest stored or deflated entry, CRC verified |
 | CSO / CISO | .cso .ciso | Yes | No | v0/v1/v2; deflate and LZ4 blocks (PSP, Dreamcast tooling) |
 | ZSO | .zso | Yes | No | CISO layout with LZ4 blocks |
@@ -57,7 +58,7 @@ The program is one small executable with no runtime dependencies.
 | WBFS | .wbfs | Planned | No | Wii backup file system |
 | GCM | .gcm .iso | Yes | No | Big-endian FST reader; files need no block alignment |
 | NKit | .nkit.iso | Planned | No | Wii / GameCube |
-| ISZ | .isz | Yes | No | UltraISO: zlib, raw and zero chunks; bzip2 and AES declined |
+| ISZ | .isz | Yes | No | UltraISO: zlib, bzip2, raw and zero chunks; AES declined |
 | DAA | .daa | Yes | No | PowerISO v0x100 deflate; v0x110, LZMA and encrypted declined |
 | UIF | .uif | Yes | No | MagicISO: zlib, raw and zero blocks; passworded declined |
 | BlindWrite 5/6 | .b5t .b6t | Yes | No | Descriptor beside the .b5i/.b6i data file |
@@ -79,12 +80,15 @@ compressor - because the built-in Windows compression APIs only speak their own 
 ntdll, so no table lives in the image. Compressed images expand once to `%TEMP%\FoxImg\`
 and then open like any other image, the same way ECM does.
 
+The other codecs share that same input and output path, so a container can mix them
+chunk by chunk - an ISZ may hold zlib and bzip2 blocks in one image.
+
 | Codec | Status | Used by |
 | --- | --- | --- |
 | DEFLATE (inflate) | Yes | .gz, .zip, .cso, .gcz, .dax, .jso, .isz, .pbp (raw and zlib framing, auto-detected) |
 | DEFLATE (compress) | Yes | Save As gzip ISO (fixed Huffman, 32 KB window) |
 | LZMA | Yes | CHD hunks; DAA v0x110 and RVZ later |
-| bzip2 | Planned | ISZ, RVZ |
+| bzip2 | Yes | .bz2, ISZ chunks; later RVZ |
 | zstd | Planned | RVZ |
 | LZ4 | Yes | ZSO, CISO v2 |
 | FLAC | Yes | CHD cdfl and flac hunks (16-bit stereo) |

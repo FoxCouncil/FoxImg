@@ -1138,6 +1138,14 @@ ChdExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, MAME CH
 UifExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, MagicISO UIF
 DmgExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, Apple UDIF (zlib/raw/zero)
 PbpExpandFile       PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, PSP EBOOT holding a PS1 disc
+BzExpandFile        PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, whole-file bzip2 stream
+BzDecodeStream      PROTO                      ; one bzip2 stream from the current input -> BOOL
+BzFree              PROTO                      ; release the block buffer between images
+; the pieces of the deflate session bzip2.asm shares: same input, same output,
+; same sticky error flag, so the two codecs stay interchangeable to a caller
+EXTERNDEF g_zfErr:DWORD
+ZfInByte            PROTO                      ; next input byte in eax, sets g_zfErr at the end
+ZfPutB              PROTO :DWORD               ; one byte to the output buffer
 GzCompressFile      PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL; worker progress + Cancel
 EXTERNDEF g_saveGzip:DWORD                      ; save target ends in .gz: worker gzips the image
 

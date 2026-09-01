@@ -790,6 +790,7 @@ ZfExpandFree PROC
     invoke VfsFreeMem, g_zfOut
     mov g_zfIn, 0
     mov g_zfOut, 0
+    invoke BzFree                           ; the bzip2 block buffer is the largest of the three
     ret
 ZfExpandFree ENDP
 
@@ -2744,9 +2745,9 @@ IszExpandFile PROC USES esi ebx pszSrc:DWORD, pszDst:DWORD
         .ELSEIF ebx == 2                    ; zlib
             invoke ZfSetInput, dataLo, dataHi
             invoke ZfSmartInflate
-        .ELSE                               ; bzip2, not carried
-            mov g_zfErr, 1
-            .BREAK
+        .ELSE                               ; bzip2
+            invoke ZfSetInput, dataLo, dataHi
+            invoke BzDecodeStream
         .ENDIF
         mov eax, chunkLen
         add dataLo, eax
@@ -5413,6 +5414,43 @@ done:
     invoke ZfClosePair, ok, hIn, hOut, pszDst
     ret
 DmgExpandFile ENDP
+
+; ---------------------------------------------------------------------------
+; bzip2 (.bz2): one stream, whole file, the sibling of the gzip path
+; ---------------------------------------------------------------------------
+; The stream carries no uncompressed size, so the output cannot be reserved
+; up front the way the indexed containers do.
+BzExpandFile PROC USES ebx pszSrc:DWORD, pszDst:DWORD
+    LOCAL hIn:DWORD
+    LOCAL hOut:DWORD
+    LOCAL ok:DWORD
+    mov ok, FALSE
+    mov hOut, INVALID_HANDLE_VALUE
+    invoke FileOpenReadSeq, pszSrc
+    .IF eax == INVALID_HANDLE_VALUE
+        xor eax, eax
+        ret
+    .ENDIF
+    mov hIn, eax
+    invoke ZfBeginOut, pszDst, hIn, 0, 0
+    .IF eax == INVALID_HANDLE_VALUE
+        jmp done
+    .ENDIF
+    mov hOut, eax
+    invoke ZfSetInput, 0, 0
+    invoke BzDecodeStream
+    .IF eax == 0
+        jmp done
+    .ENDIF
+    invoke ZfOutFinal
+    .IF g_zfErr == 0
+        mov ok, TRUE
+    .ENDIF
+done:
+    invoke ZfExpandFree
+    invoke ZfClosePair, ok, hIn, hOut, pszDst
+    ret
+BzExpandFile ENDP
 
 ; ---------------------------------------------------------------------------
 ; PBP (PSP EBOOT): a PlayStation disc inside DATA.PSAR
