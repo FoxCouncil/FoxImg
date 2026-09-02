@@ -85,7 +85,7 @@ chunk by chunk - an ISZ may hold zlib and bzip2 blocks in one image.
 | Codec | Status | Used by |
 | --- | --- | --- |
 | DEFLATE (inflate) | Yes | .gz, .zip, .cso, .gcz, .dax, .jso, .isz, .pbp (raw and zlib framing, auto-detected) |
-| DEFLATE (compress) | Yes | Save As gzip ISO: per block the cheaper of dynamic Huffman, fixed, or stored; 32 KB window |
+| DEFLATE (compress) | Yes | Save As gzip ISO: lazy matching over a 32 KB window; per block the cheaper of dynamic Huffman, fixed, or stored |
 | LZMA | Yes | CHD hunks; DAA v0x110 and LZMA-compressed RVZ later |
 | bzip2 | Yes | .bz2, ISZ and DMG chunks; bzip2-compressed RVZ later |
 | Zstandard | Yes | RVZ groups and tables |

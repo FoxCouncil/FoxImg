@@ -1314,6 +1314,9 @@ DF_HASHSZ       equ 32768
 DF_MAXDIST      equ 32768
 DF_MAXMATCH     equ 258
 DF_DEPTH        equ 128                 ; chain probes per position
+DF_MAXLAZY      equ 32                  ; a held match this long is not second-guessed
+DF_GOODLEN      equ 8                   ; behind a held match this long, probe a quarter of the chain
+DF_NICELEN      equ 128                 ; a match this long ends the chain walk
 
 .data
 g_dfInit        dd 0
@@ -1328,6 +1331,7 @@ g_dfChunkLen    dd 0
 g_dfHead        dd 0                    ; hash -> position + 1, 0 when empty
 g_dfPrev        dd 0                    ; position -> previous position + 1 on the same chain
 g_dfMDist       dd 0                    ; distance of the match DfLongestMatch found
+g_dfChainMax    dd DF_DEPTH             ; chain probes allowed for the next search
 g_dfTok         dd 0                    ; one dword per token: literal, or bit 31 | lsym<<26 | (len-3)<<16 | dist-1
 g_dfTokN        dd 0
 g_dfExtraBits   dd 0                    ; length and distance extra bits owed by the matches so far
@@ -2137,7 +2141,8 @@ DfMatchAt PROC USES esi edi ebx pos:DWORD, cand:DWORD
         mov eax, DF_MAXMATCH
     .ENDIF
     mov maxLen, eax
-    mov depth, DF_DEPTH
+    mov eax, g_dfChainMax
+    mov depth, eax
     .WHILE cand != 0 && depth != 0
         mov ebx, cand
         dec ebx
@@ -2186,6 +2191,7 @@ cmp_done:
             mov g_dfMDist, eax
             mov eax, maxLen
             .BREAK .IF ecx == eax
+            .BREAK .IF ecx >= DF_NICELEN    ; long enough; the rest of the chain is not worth it
         .ENDIF
 next_cand:
         mov ecx, g_dfPrev
@@ -2200,13 +2206,77 @@ DfMatchAt ENDP
 ; One chunk as one fixed-Huffman block. The per-byte work - hash, chain insert,
 ; first-byte gate and literal emit - runs inline; procedure calls remain only
 ; for accepted matches and buffer flushes, which are rare on either extreme.
-; One chunk: find matches and collect tokens with their symbol counts, then
-; hand the block to DfEmitBlock, which picks the coding. The per-byte work -
-; hash, chain insert, first-byte gate and the token itself - stays inline.
+; Link position pos into its hash chain (three bytes must exist there)
+DfInsert PROC USES esi edi pos:DWORD
+    mov esi, g_dfChunkPtr
+    mov ecx, pos
+    movzx eax, byte ptr [esi + ecx]
+    shl eax, 10
+    movzx edx, byte ptr [esi + ecx + 1]
+    shl edx, 5
+    xor eax, edx
+    movzx edx, byte ptr [esi + ecx + 2]
+    xor eax, edx
+    and eax, DF_HASHSZ - 1
+    mov edi, g_dfHead
+    mov edx, dword ptr [edi + eax * 4]      ; old head -> this position's prev
+    inc ecx
+    mov dword ptr [edi + eax * 4], ecx
+    mov edi, g_dfPrev
+    mov dword ptr [edi + ecx * 4 - 4], edx
+    lea eax, [edx]                          ; the old head, for the caller's search
+    ret
+DfInsert ENDP
+
+; One literal token, counted
+DfAddLit PROC b:DWORD
+    mov eax, b
+    inc dword ptr g_dfFreqL[eax * 4]
+    mov edx, g_dfTok
+    mov ecx, g_dfTokN
+    mov dword ptr [edx + ecx * 4], eax
+    inc g_dfTokN
+    ret
+DfAddLit ENDP
+
+; One match token, its symbols counted and its extra bits owed
+DfAddMatch PROC USES ebx mlen:DWORD, mdist:DWORD
+    invoke DfLenSym, mlen
+    inc dword ptr g_dfFreqL[eax * 4 + 257 * 4]
+    movzx ecx, byte ptr g_zfLenExtra[eax]
+    add g_dfExtraBits, ecx
+    shl eax, 26
+    mov ecx, mlen
+    sub ecx, 3
+    shl ecx, 16
+    or eax, ecx
+    mov ecx, mdist
+    dec ecx
+    or eax, ecx
+    or eax, 80000000h
+    mov edx, g_dfTok
+    mov ecx, g_dfTokN
+    mov dword ptr [edx + ecx * 4], eax
+    inc g_dfTokN
+    invoke DfDistSym, mdist
+    inc dword ptr g_dfFreqD[eax * 4]
+    movzx ecx, byte ptr g_zfDistExtra[eax]
+    add g_dfExtraBits, ecx
+    ret
+DfAddMatch ENDP
+
+; One chunk: find matches lazily - a match is held back one position, and if
+; the next position matches longer, the held byte goes out as a literal and
+; the longer match is taken instead (zlib's level-6 behaviour). Tokens and
+; symbol counts collect as they go; DfEmitBlock then picks the coding.
 DfCompressChunk PROC USES esi edi ebx last:DWORD
-    LOCAL mlen:DWORD
-    LOCAL hashv:DWORD
-    LOCAL candv:DWORD
+    LOCAL prevLen:DWORD
+    LOCAL prevDist:DWORD
+    LOCAL curLen:DWORD
+    LOCAL curDist:DWORD
+    LOCAL avail:DWORD
+    LOCAL k:DWORD
+    LOCAL endPos:DWORD
     mov edi, g_dfHead
     xor eax, eax
     mov ecx, DF_HASHSZ
@@ -2216,113 +2286,89 @@ DfCompressChunk PROC USES esi edi ebx last:DWORD
     rep stosd
     mov g_dfTokN, 0
     mov g_dfExtraBits, 0
+    mov prevLen, 0
+    mov avail, 0
     mov esi, g_dfChunkPtr
     xor ebx, ebx                            ; position
     .WHILE g_dfErr == 0
         mov eax, g_dfChunkLen
         .BREAK .IF ebx >= eax
+        ; the best match here, if any, and this position into its chain
+        mov curLen, 0
         sub eax, 2
         .IF ebx < eax
-            ; hash the three bytes here and fetch the chain head
-            movzx eax, byte ptr [esi + ebx]
-            shl eax, 10
-            movzx ecx, byte ptr [esi + ebx + 1]
-            shl ecx, 5
-            xor eax, ecx
-            movzx ecx, byte ptr [esi + ebx + 2]
-            xor eax, ecx
-            and eax, DF_HASHSZ - 1
-            mov hashv, eax
-            mov edi, g_dfHead
-            mov edx, dword ptr [edi + eax * 4]
-            mov candv, edx
-            .IF edx != 0
-                ; worth a real search only when the first bytes agree in range
-                lea ecx, [edx - 1]
-                mov eax, ebx
-                sub eax, ecx
-                .IF eax <= DF_MAXDIST
-                    mov al, byte ptr [esi + ecx]
-                    .IF al == byte ptr [esi + ebx]
-                        invoke DfMatchAt, ebx, candv
+            invoke DfInsert, ebx
+            .IF prevLen >= DF_MAXLAZY
+                xor eax, eax                ; the held match is long enough: take it, no second search
+            .ENDIF
+            mov g_dfChainMax, DF_DEPTH
+            .IF prevLen >= DF_GOODLEN
+                mov g_dfChainMax, DF_DEPTH / 4 ; a fair match in hand: probe less for a better one
+            .ENDIF
+            .IF eax != 0
+                lea ecx, [eax - 1]
+                mov edx, ebx
+                sub edx, ecx
+                .IF edx <= DF_MAXDIST
+                    mov dl, byte ptr [esi + ecx]
+                    .IF dl == byte ptr [esi + ebx]
+                        invoke DfMatchAt, ebx, eax
                         mov ecx, g_dfMDist
                         .IF eax > 3 || (eax == 3 && ecx <= 4096)
-                            mov mlen, eax
-                            ; the match as a token, and its symbols counted
-                            invoke DfLenSym, mlen
-                            inc dword ptr g_dfFreqL[eax * 4 + 257 * 4]
-                            movzx ecx, byte ptr g_zfLenExtra[eax]
-                            add g_dfExtraBits, ecx
-                            shl eax, 26
-                            mov ecx, mlen
-                            sub ecx, 3
-                            shl ecx, 16
-                            or eax, ecx
-                            mov ecx, g_dfMDist
-                            dec ecx
-                            or eax, ecx
-                            or eax, 80000000h
-                            mov edi, g_dfTok
-                            mov ecx, g_dfTokN
-                            mov dword ptr [edi + ecx * 4], eax
-                            inc g_dfTokN
-                            invoke DfDistSym, g_dfMDist
-                            inc dword ptr g_dfFreqD[eax * 4]
-                            movzx ecx, byte ptr g_zfDistExtra[eax]
-                            add g_dfExtraBits, ecx
-                            ; insert every covered position, inline
-                            mov edx, ebx
-                            add edx, mlen
-                            mov ecx, g_dfChunkLen
-                            sub ecx, 2
-                            .WHILE ebx < edx
-                                .BREAK .IF ebx >= ecx
-                                movzx eax, byte ptr [esi + ebx]
-                                shl eax, 10
-                                push ecx
-                                movzx ecx, byte ptr [esi + ebx + 1]
-                                shl ecx, 5
-                                xor eax, ecx
-                                movzx ecx, byte ptr [esi + ebx + 2]
-                                xor eax, ecx
-                                and eax, DF_HASHSZ - 1
-                                mov edi, g_dfHead
-                                mov ecx, dword ptr [edi + eax * 4]
-                                lea edi, [ebx + 1]
-                                push edx
-                                mov edx, g_dfHead
-                                mov dword ptr [edx + eax * 4], edi
-                                mov edx, g_dfPrev
-                                mov dword ptr [edx + ebx * 4], ecx
-                                pop edx
-                                pop ecx
-                                inc ebx
-                            .ENDW
-                            mov ebx, edx
-                            .CONTINUE
+                            mov curLen, eax
+                            mov curDist, ecx
                         .ENDIF
                     .ENDIF
                 .ENDIF
             .ENDIF
-            ; no match: link this position into its chain
-            mov eax, hashv
-            mov edi, g_dfHead
-            mov ecx, candv
-            lea edx, [ebx + 1]
-            mov dword ptr [edi + eax * 4], edx
-            mov edx, g_dfPrev
-            mov dword ptr [edx + ebx * 4], ecx
         .ENDIF
-        ; a literal token, counted
-        movzx eax, byte ptr [esi + ebx]
-        inc dword ptr g_dfFreqL[eax * 4]
-        mov edi, g_dfTok
-        mov ecx, g_dfTokN
-        mov dword ptr [edi + ecx * 4], eax
-        inc g_dfTokN
+        ; the held match wins when the new one is no longer
+        mov eax, prevLen
+        .IF eax >= 3 && eax >= curLen
+            invoke DfAddMatch, prevLen, prevDist
+            mov eax, ebx
+            dec eax
+            add eax, prevLen
+            mov endPos, eax                 ; first position after the match
+            mov eax, ebx
+            inc eax
+            mov k, eax                      ; ebx - 1 and ebx are already in their chains
+            mov ecx, g_dfChunkLen
+            sub ecx, 2
+            .WHILE 1
+                mov eax, k
+                .BREAK .IF eax >= endPos
+                .BREAK .IF eax >= ecx
+                push ecx
+                invoke DfInsert, k
+                pop ecx
+                inc k
+            .ENDW
+            mov ebx, endPos
+            mov prevLen, 0
+            mov avail, 0
+            .CONTINUE
+        .ENDIF
+        .IF avail != 0
+            movzx eax, byte ptr [esi + ebx - 1]
+            invoke DfAddLit, eax
+        .ENDIF
+        mov eax, curLen
+        mov prevLen, eax
+        mov eax, curDist
+        mov prevDist, eax
+        mov avail, 1
         inc ebx
     .ENDW
+    ; whatever is still held at the end
     .IF g_dfErr == 0
+        .IF prevLen >= 3
+            invoke DfAddMatch, prevLen, prevDist
+        .ELSEIF avail != 0
+            mov ecx, g_dfChunkLen
+            movzx eax, byte ptr [esi + ecx - 1]
+            invoke DfAddLit, eax
+        .ENDIF
         invoke DfEmitBlock, last
     .ENDIF
     ret
