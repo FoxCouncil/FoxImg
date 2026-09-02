@@ -1335,6 +1335,11 @@ g_dfChainMax    dd DF_DEPTH             ; chain probes allowed for the next sear
 g_dfTok         dd 0                    ; one dword per token: literal, or bit 31 | lsym<<26 | (len-3)<<16 | dist-1
 g_dfTokN        dd 0
 g_dfExtraBits   dd 0                    ; length and distance extra bits owed by the matches so far
+g_dfCompLo      dd 0                    ; bytes of deflate stream written by DfCompressStream
+g_dfCompHi      dd 0
+g_dfSizeLo      dd 0                    ; bytes of input it consumed
+g_dfSizeHi      dd 0
+g_dfCrc         dd 0                    ; CRC-32 of that input
 
 .data?
 g_dfLitCode     dw 288 dup(?)           ; fixed literal/length codes, bit-reversed for LSB-first emit
@@ -1415,6 +1420,8 @@ DfWriteRaw PROC USES esi ebx pData:DWORD, cb:DWORD
     LOCAL written:DWORD
     mov esi, pData
     mov ebx, cb
+    add g_dfCompLo, ebx                     ; running compressed size for the wrappers
+    adc g_dfCompHi, 0
     .WHILE ebx != 0
         .IF g_jobCancel != 0
             mov g_dfErr, 1
@@ -2374,34 +2381,16 @@ DfCompressChunk PROC USES esi edi ebx last:DWORD
     ret
 DfCompressChunk ENDP
 
-; gzip pszSrc into pszDst. Worker-thread aware: progress totals and Cancel.
-GzCompressFile PROC USES ebx pszSrc:DWORD, pszDst:DWORD
-    LOCAL hIn:DWORD
-    LOCAL hOut:DWORD
-    LOCAL sizeLo:DWORD
-    LOCAL sizeHi:DWORD
+; Deflate hIn to hOut as one raw stream, byte-aligned at the end, with progress
+; totals and Cancel honoured. Leaves the input size, its CRC-32 and the stream
+; length in g_dfSize*, g_dfCrc, g_dfComp*. Returns TRUE on success.
+DfCompressStream PROC USES ebx hIn:DWORD, hOut:DWORD
     LOCAL offLo:DWORD
     LOCAL offHi:DWORD
     LOCAL nRead:DWORD
-    LOCAL crc:DWORD
     LOCAL last:DWORD
-    LOCAL tail[10]:BYTE
     LOCAL ok:DWORD
-
     mov ok, FALSE
-    invoke FileOpenReadSeq, pszSrc
-    .IF eax == INVALID_HANDLE_VALUE
-        xor eax, eax
-        ret
-    .ENDIF
-    mov hIn, eax
-    invoke CreateFileW, pszDst, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL
-    .IF eax == INVALID_HANDLE_VALUE
-        invoke CloseHandle, hIn
-        xor eax, eax
-        ret
-    .ENDIF
-    mov hOut, eax
     invoke DfInitTables
     invoke VfsAlloc, DF_CHUNK
     mov g_dfChunkPtr, eax
@@ -2422,30 +2411,25 @@ GzCompressFile PROC USES ebx pszSrc:DWORD, pszDst:DWORD
     mov g_dfBitBuf, 0
     mov g_dfBitCnt, 0
     mov g_dfOutPos, 0
-    invoke FileSize64, hIn, addr sizeLo, addr sizeHi
-    mov eax, sizeLo
+    mov g_dfCompLo, 0
+    mov g_dfCompHi, 0
+    mov g_dfCrc, 0
+    invoke FileSize64, hIn, offset g_dfSizeLo, offset g_dfSizeHi
+    mov eax, g_dfSizeLo
     mov g_progTotal, eax
-    mov eax, sizeHi
+    mov eax, g_dfSizeHi
     mov g_progTotalHi, eax
     mov g_progDone, 0
     mov g_progDoneHi, 0
-    ; 10-byte gzip header: magic, deflate, no flags, no mtime, unknown OS
-    mov dword ptr tail[0], 00088B1Fh
-    mov dword ptr tail[4], 0
-    mov byte ptr tail[8], 0
-    mov byte ptr tail[9], 0FFh
-    lea eax, tail
-    invoke DfWriteRaw, eax, 10
-    mov crc, 0
     mov offLo, 0
     mov offHi, 0
-    .IF sizeLo == 0 && sizeHi == 0
+    .IF g_dfSizeLo == 0 && g_dfSizeHi == 0
         invoke DfEmit, 3, 3                 ; final empty block for an empty file
         invoke DfPutLit, 256
     .ENDIF
     .WHILE g_dfErr == 0
-        mov eax, sizeLo
-        or eax, sizeHi
+        mov eax, g_dfSizeLo
+        or eax, g_dfSizeHi
         .BREAK .IF eax == 0                 ; empty file, handled above
         invoke FileReadAt, hIn, offLo, offHi, g_dfChunkPtr, DF_CHUNK
         mov nRead, eax
@@ -2456,12 +2440,12 @@ GzCompressFile PROC USES ebx pszSrc:DWORD, pszDst:DWORD
         mov g_dfChunkLen, eax
         add offLo, eax
         adc offHi, 0
-        invoke RtlComputeCrc32, crc, g_dfChunkPtr, nRead
-        mov crc, eax
+        invoke RtlComputeCrc32, g_dfCrc, g_dfChunkPtr, nRead
+        mov g_dfCrc, eax
         mov last, 0
         mov eax, offLo
         mov ecx, offHi
-        .IF eax == sizeLo && ecx == sizeHi
+        .IF eax == g_dfSizeLo && ecx == g_dfSizeHi
             mov last, 1
         .ENDIF
         invoke DfCompressChunk, last
@@ -2476,19 +2460,12 @@ GzCompressFile PROC USES ebx pszSrc:DWORD, pszDst:DWORD
     .IF g_dfErr != 0
         jmp cleanup
     .ENDIF
-    ; pad the last bits out, then CRC-32 and size mod 2^32
-    .IF g_dfBitCnt != 0
+    .IF g_dfBitCnt != 0                     ; pad the last bits out
         invoke DfEmit, 0, 7
         mov g_dfBitCnt, 0
         mov g_dfBitBuf, 0
     .ENDIF
     invoke DfFlushOut
-    mov eax, crc
-    mov dword ptr tail[0], eax
-    mov eax, sizeLo
-    mov dword ptr tail[4], eax
-    lea eax, tail
-    invoke DfWriteRaw, eax, 8
     .IF g_dfErr == 0
         mov ok, TRUE
     .ENDIF
@@ -2503,14 +2480,353 @@ cleanup:
     mov g_dfOut, 0
     mov g_dfHead, 0
     mov g_dfPrev, 0
-    invoke CloseHandle, hIn
-    invoke CloseHandle, hOut
-    .IF ok == 0
-        invoke DeleteFileW, pszDst
-    .ENDIF
     mov eax, ok
     ret
+DfCompressStream ENDP
+
+; Open the pair of files a compressing wrapper needs; hIn in eax, hOut in edx
+DfOpenPair PROC pszSrc:DWORD, pszDst:DWORD
+    LOCAL hIn:DWORD
+    invoke FileOpenReadSeq, pszSrc
+    .IF eax == INVALID_HANDLE_VALUE
+        xor eax, eax
+        ret
+    .ENDIF
+    mov hIn, eax
+    invoke CreateFileW, pszDst, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL
+    .IF eax == INVALID_HANDLE_VALUE
+        invoke CloseHandle, hIn
+        xor eax, eax
+        ret
+    .ENDIF
+    mov edx, eax
+    mov eax, hIn
+    ret
+DfOpenPair ENDP
+
+; Close both and drop the output unless ok; returns ok
+DfClosePair PROC okv:DWORD, hIn:DWORD, hOut:DWORD, pszDst:DWORD
+    invoke CloseHandle, hIn
+    invoke CloseHandle, hOut
+    .IF okv == 0
+        invoke DeleteFileW, pszDst
+    .ENDIF
+    mov eax, okv
+    ret
+DfClosePair ENDP
+
+; gzip pszSrc into pszDst
+GzCompressFile PROC pszSrc:DWORD, pszDst:DWORD
+    LOCAL hIn:DWORD
+    LOCAL hOut:DWORD
+    LOCAL tail[10]:BYTE
+    LOCAL ok:DWORD
+    mov ok, FALSE
+    invoke DfOpenPair, pszSrc, pszDst
+    .IF eax == 0
+        ret
+    .ENDIF
+    mov hIn, eax
+    mov hOut, edx
+    mov g_dfHOut, edx
+    mov g_dfErr, 0
+    ; 10-byte gzip header: magic, deflate, no flags, no mtime, unknown OS
+    mov dword ptr tail[0], 00088B1Fh
+    mov dword ptr tail[4], 0
+    mov byte ptr tail[8], 0
+    mov byte ptr tail[9], 0FFh
+    lea eax, tail
+    invoke DfWriteRaw, eax, 10
+    invoke DfCompressStream, hIn, hOut
+    .IF eax == 0
+        jmp done
+    .ENDIF
+    ; CRC-32 and size mod 2^32
+    mov eax, g_dfCrc
+    mov dword ptr tail[0], eax
+    mov eax, g_dfSizeLo
+    mov dword ptr tail[4], eax
+    lea eax, tail
+    invoke DfWriteRaw, eax, 8
+    .IF g_dfErr == 0
+        mov ok, TRUE
+    .ENDIF
+done:
+    invoke DfClosePair, ok, hIn, hOut, pszDst
+    ret
 GzCompressFile ENDP
+
+; ---------------------------------------------------------------------------
+; zip: one deflated entry, sizes and CRC in a data descriptor after the data
+; (bit 3), UTF-8 name (bit 11), zip64 records when the image is 4 GB or more
+; ---------------------------------------------------------------------------
+ZIP_SIG_LOCAL   equ 04034B50h
+ZIP_SIG_CENTRAL equ 02014B50h
+ZIP_SIG_END     equ 06054B50h
+ZIP_SIG_END64   equ 06064B50h
+ZIP_SIG_LOC64   equ 07064B50h
+ZIP_SIG_DESC    equ 08074B50h
+ZIP_FLAGS       equ 0808h               ; data descriptor, UTF-8 name
+ZIP_NAME_MAX    equ 512
+
+; DOS date in ax, DOS time in dx, for the local clock
+ZipDosTime PROC USES ebx
+    LOCAL sysTime:SYSTEMTIME
+    invoke GetLocalTime, addr sysTime
+    movzx eax, sysTime.wYear
+    sub eax, 1980
+    shl eax, 9
+    movzx ecx, sysTime.wMonth
+    shl ecx, 5
+    or eax, ecx
+    movzx ecx, sysTime.wDay
+    or eax, ecx
+    movzx edx, sysTime.wHour
+    shl edx, 11
+    movzx ecx, sysTime.wMinute
+    shl ecx, 5
+    or edx, ecx
+    movzx ecx, sysTime.wSecond
+    shr ecx, 1
+    or edx, ecx
+    ret
+ZipDosTime ENDP
+
+; zip pszSrc into pszDst as the single entry pszEntry (UTF-16 zname)
+ZipCompressFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD, pszEntry:DWORD
+    LOCAL hIn:DWORD
+    LOCAL hOut:DWORD
+    LOCAL zname[ZIP_NAME_MAX]:BYTE
+    LOCAL nameLen:DWORD
+    LOCAL hdr[64]:BYTE
+    LOCAL dosDate:DWORD
+    LOCAL dosTime:DWORD
+    LOCAL big:DWORD                     ; zip64 needed
+    LOCAL dataStartLo:DWORD             ; offset of the local header (always 0 here)
+    LOCAL cdOffLo:DWORD
+    LOCAL cdOffHi:DWORD
+    LOCAL cdSize:DWORD
+    LOCAL compLo:DWORD
+    LOCAL compHi:DWORD
+    LOCAL ok:DWORD
+    mov ok, FALSE
+    invoke WideCharToMultiByte, CP_UTF8, 0, pszEntry, -1, addr zname, ZIP_NAME_MAX, NULL, NULL
+    .IF eax <= 1
+        xor eax, eax
+        ret
+    .ENDIF
+    dec eax
+    mov nameLen, eax
+    invoke DfOpenPair, pszSrc, pszDst
+    .IF eax == 0
+        ret
+    .ENDIF
+    mov hIn, eax
+    mov hOut, edx
+    mov g_dfHOut, edx
+    mov g_dfErr, 0
+    invoke ZipDosTime
+    mov dosDate, eax
+    mov dosTime, edx
+    ; zip64 whenever the image could not be described in 32 bits; a deflate
+    ; stream can run a hair over its input, so the line sits below 4 GB
+    invoke FileSize64, hIn, offset g_dfSizeLo, offset g_dfSizeHi
+    mov big, 0
+    .IF g_dfSizeHi != 0 || g_dfSizeLo >= 0FFF00000h
+        mov big, 1
+    .ENDIF
+    ; --- local file header ---
+    lea edi, hdr
+    mov dword ptr [edi], ZIP_SIG_LOCAL
+    mov word ptr [edi + 4], 20
+    .IF big != 0
+        mov word ptr [edi + 4], 45
+    .ENDIF
+    mov word ptr [edi + 6], ZIP_FLAGS
+    mov word ptr [edi + 8], 8               ; deflate
+    mov eax, dosTime
+    mov word ptr [edi + 10], ax
+    mov eax, dosDate
+    mov word ptr [edi + 12], ax
+    mov dword ptr [edi + 14], 0             ; crc, sizes: in the descriptor
+    mov dword ptr [edi + 18], 0
+    mov dword ptr [edi + 22], 0
+    mov eax, nameLen
+    mov word ptr [edi + 26], ax
+    mov word ptr [edi + 28], 0
+    .IF big != 0
+        ; a zip64 extra with placeholder sizes tells readers the descriptor is 64-bit
+        mov dword ptr [edi + 18], 0FFFFFFFFh
+        mov dword ptr [edi + 22], 0FFFFFFFFh
+        mov word ptr [edi + 28], 20
+    .ENDIF
+    invoke DfWriteRaw, edi, 30
+    invoke DfWriteRaw, addr zname, nameLen
+    .IF big != 0
+        mov word ptr [edi], 1               ; zip64 extra: id, size, two zero sizes
+        mov word ptr [edi + 2], 16
+        xor eax, eax
+        mov dword ptr [edi + 4], eax
+        mov dword ptr [edi + 8], eax
+        mov dword ptr [edi + 12], eax
+        mov dword ptr [edi + 16], eax
+        invoke DfWriteRaw, edi, 20
+    .ENDIF
+    mov dataStartLo, 0
+    ; --- the entry ---
+    invoke DfCompressStream, hIn, hOut
+    .IF eax == 0
+        jmp done
+    .ENDIF
+    mov eax, g_dfCompLo                 ; the stream's length, before the records
+    mov compLo, eax                     ; below add to the same counter
+    mov eax, g_dfCompHi
+    mov compHi, eax
+    ; --- data descriptor ---
+    lea edi, hdr
+    mov dword ptr [edi], ZIP_SIG_DESC
+    mov eax, g_dfCrc
+    mov dword ptr [edi + 4], eax
+    .IF big == 0
+        mov eax, compLo
+        mov dword ptr [edi + 8], eax
+        mov eax, g_dfSizeLo
+        mov dword ptr [edi + 12], eax
+        invoke DfWriteRaw, edi, 16
+    .ELSE
+        mov eax, compLo
+        mov dword ptr [edi + 8], eax
+        mov eax, compHi
+        mov dword ptr [edi + 12], eax
+        mov eax, g_dfSizeLo
+        mov dword ptr [edi + 16], eax
+        mov eax, g_dfSizeHi
+        mov dword ptr [edi + 20], eax
+        invoke DfWriteRaw, edi, 24
+    .ENDIF
+    ; where the central directory begins: header + zname (+ extra) + stream + descriptor
+    mov eax, 30
+    add eax, nameLen
+    add eax, compLo
+    mov edx, compHi
+    adc edx, 0
+    .IF big == 0
+        add eax, 16
+    .ELSE
+        add eax, 20 + 24
+    .ENDIF
+    adc edx, 0
+    mov cdOffLo, eax
+    mov cdOffHi, edx
+    ; --- central directory: one entry ---
+    lea edi, hdr
+    mov dword ptr [edi], ZIP_SIG_CENTRAL
+    mov word ptr [edi + 4], 20              ; made by, needed
+    mov word ptr [edi + 6], 20
+    .IF big != 0
+        mov word ptr [edi + 4], 45
+        mov word ptr [edi + 6], 45
+    .ENDIF
+    mov word ptr [edi + 8], ZIP_FLAGS
+    mov word ptr [edi + 10], 8
+    mov eax, dosTime
+    mov word ptr [edi + 12], ax
+    mov eax, dosDate
+    mov word ptr [edi + 14], ax
+    mov eax, g_dfCrc
+    mov dword ptr [edi + 16], eax
+    mov eax, compLo
+    mov dword ptr [edi + 20], eax
+    mov eax, g_dfSizeLo
+    mov dword ptr [edi + 24], eax
+    mov eax, nameLen
+    mov word ptr [edi + 28], ax
+    mov word ptr [edi + 30], 0              ; extra length
+    mov word ptr [edi + 32], 0              ; comment
+    mov word ptr [edi + 34], 0              ; disk
+    mov word ptr [edi + 36], 0              ; internal attributes
+    mov dword ptr [edi + 38], 0             ; external attributes
+    mov dword ptr [edi + 42], 0             ; local header offset
+    mov eax, 46
+    add eax, nameLen
+    mov cdSize, eax
+    .IF big != 0
+        mov dword ptr [edi + 20], 0FFFFFFFFh
+        mov dword ptr [edi + 24], 0FFFFFFFFh
+        mov word ptr [edi + 30], 28         ; zip64 extra: id, size, usize, csize, offset
+        add cdSize, 28
+    .ENDIF
+    invoke DfWriteRaw, edi, 46
+    invoke DfWriteRaw, addr zname, nameLen
+    .IF big != 0
+        mov word ptr [edi], 1
+        mov word ptr [edi + 2], 24
+        mov eax, g_dfSizeLo
+        mov dword ptr [edi + 4], eax
+        mov eax, g_dfSizeHi
+        mov dword ptr [edi + 8], eax
+        mov eax, compLo
+        mov dword ptr [edi + 12], eax
+        mov eax, compHi
+        mov dword ptr [edi + 16], eax
+        xor eax, eax
+        mov dword ptr [edi + 20], eax       ; local header offset: 0
+        mov dword ptr [edi + 24], eax
+        invoke DfWriteRaw, edi, 28
+    .ENDIF
+    ; --- end records ---
+    .IF big != 0
+        mov dword ptr [edi], ZIP_SIG_END64
+        mov dword ptr [edi + 4], 44         ; size of the rest of this record
+        mov dword ptr [edi + 8], 0
+        mov word ptr [edi + 12], 45
+        mov word ptr [edi + 14], 45
+        mov dword ptr [edi + 16], 0         ; disk numbers
+        mov dword ptr [edi + 20], 0
+        mov dword ptr [edi + 24], 1         ; entries on this disk, total
+        mov dword ptr [edi + 28], 0
+        mov dword ptr [edi + 32], 1
+        mov dword ptr [edi + 36], 0
+        mov eax, cdSize
+        mov dword ptr [edi + 40], eax
+        mov dword ptr [edi + 44], 0
+        mov eax, cdOffLo
+        mov dword ptr [edi + 48], eax
+        mov eax, cdOffHi
+        mov dword ptr [edi + 52], eax
+        invoke DfWriteRaw, edi, 56
+        ; locator: where that record sits (right after the central directory)
+        mov dword ptr [edi], ZIP_SIG_LOC64
+        mov dword ptr [edi + 4], 0
+        mov eax, cdOffLo
+        add eax, cdSize
+        mov edx, cdOffHi
+        adc edx, 0
+        mov dword ptr [edi + 8], eax
+        mov dword ptr [edi + 12], edx
+        mov dword ptr [edi + 16], 1
+        invoke DfWriteRaw, edi, 20
+    .ENDIF
+    mov dword ptr [edi], ZIP_SIG_END
+    mov dword ptr [edi + 4], 0              ; disk, cd disk
+    mov word ptr [edi + 8], 1
+    mov word ptr [edi + 10], 1
+    mov eax, cdSize
+    mov dword ptr [edi + 12], eax
+    mov eax, cdOffLo
+    .IF cdOffHi != 0
+        mov eax, 0FFFFFFFFh                 ; look in the zip64 record instead
+    .ENDIF
+    mov dword ptr [edi + 16], eax
+    mov word ptr [edi + 20], 0
+    invoke DfWriteRaw, edi, 22
+    .IF g_dfErr == 0
+        mov ok, TRUE
+    .ENDIF
+done:
+    invoke DfClosePair, ok, hIn, hOut, pszDst
+    ret
+ZipCompressFile ENDP
 
 ; ---------------------------------------------------------------------------
 ; zlib wrapper (RFC 1950): 2-byte header, deflate stream, Adler-32 (not verified)

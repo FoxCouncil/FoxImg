@@ -9,6 +9,7 @@ g_hWnd      dd 0
 g_hAccel    dd 0
 g_saveIsCue dd 0
 g_saveGzip  dd 0
+g_saveZip   dd 0
 
 WSTR szClassName, <FoxImgMain>
 WSTR szTitle, <FoxImg>
@@ -35,6 +36,7 @@ WSTR szExtIso, <iso>
 WSTR szExtCueDot, <.cue>
 WSTR szExtBinDot, <.bin>
 WSTR szExtGzDot, <.gz>
+WSTR szExtZipDot, <.zip>
 WSTR szTmpSuffix, <.tmp>
 WSTR szNewFolderName, <New Folder>
 WSTR szNewFileName, <New File>
@@ -49,6 +51,8 @@ szFilterSave LABEL WORD
     dw '*','.','b','i','n',0
     dw 'g','z','i','p',' ','I','S','O',' ','(','*','.','i','s','o','.','g','z',')',0
     dw '*','.','g','z',0
+    dw 'Z','i','p',' ','a','r','c','h','i','v','e',' ','(','*','.','z','i','p',')',0
+    dw '*','.','z','i','p',0
     dw 0
 szFilterAll LABEL WORD
     dw 'A','l','l',' ','F','i','l','e','s',' ','(','*','.','*',')',0
@@ -190,6 +194,7 @@ SaveBegin PROC pszTarget:DWORD
     invoke lstrcpynW, addr szTarget, pszTarget, MAX_PATH
     mov g_saveIsCue, FALSE
     mov g_saveGzip, FALSE
+    mov g_saveZip, FALSE
     invoke PathExt, addr szTarget
     push eax
     invoke lstrcmpiW, eax, offset szExtCueDot
@@ -206,9 +211,16 @@ SaveBegin PROC pszTarget:DWORD
             invoke PathWithExt, offset g_saveCue, addr szTarget, offset szExtCueDot
         .ELSE
             invoke PathExt, addr szTarget
+            push eax
             invoke lstrcmpiW, eax, offset szExtGzDot
+            pop ecx
             .IF eax == 0
                 mov g_saveGzip, TRUE
+            .ELSE
+                invoke lstrcmpiW, ecx, offset szExtZipDot
+                .IF eax == 0
+                    mov g_saveZip, TRUE
+                .ENDIF
             .ENDIF
             invoke lstrcpynW, offset g_saveData, addr szTarget, MAX_PATH
         .ENDIF

@@ -33,6 +33,8 @@ WSTR szJobExtract, <Extracting>
 WSTR szJobAdd, <Adding files>
 WSTR szCancelling, <Cancelling...>
 WSTR szGzSuffix, <.gz>
+WSTR szZipSuffix, <.zip>
+WSTR szIsoDot, <.iso>
 szPctFmt        dw '%','s','.','.','.',' ',' ','%','u','%','%',0
 szDotsFmt       dw '%','s','.','.','.',0
 
@@ -399,15 +401,31 @@ JobStartAdd ENDP
 JobThreadProc PROC USES esi ebx lpParam:DWORD
     LOCAL result:DWORD
     LOCAL szGz[MAX_PATH + 8]:WORD
+    LOCAL szEntry[MAX_PATH]:WORD
+    LOCAL szEntry2[MAX_PATH]:WORD
+    LOCAL pLeaf:DWORD
     mov result, FALSE
     mov eax, g_jobKind
     .IF eax == JOB_SAVE
         invoke IsoWrite, offset g_jobPath
         mov result, eax
-        .IF eax != 0 && g_saveGzip != 0
-            ; second pass: gzip the finished image beside itself, then take its place
-            invoke wsprintfW, addr szGz, offset g_szCatFmt, offset g_jobPath, offset szGzSuffix
-            invoke GzCompressFile, offset g_jobPath, addr szGz
+        .IF eax != 0 && (g_saveGzip != 0 || g_saveZip != 0)
+            ; second pass: compress the finished image beside itself, then take its place
+            .IF g_saveZip != 0
+                ; the entry is named after the target, .zip.tmp -> .iso
+                invoke lstrcpynW, addr szEntry, offset g_jobPath, MAX_PATH
+                invoke lstrlenW, addr szEntry
+                lea ecx, szEntry
+                mov word ptr [ecx + eax * 2 - 8], 0     ; drop ".tmp"
+                invoke PathWithExt, addr szEntry2, addr szEntry, offset szIsoDot
+                invoke PathLeaf, addr szEntry2
+                mov pLeaf, eax
+                invoke wsprintfW, addr szGz, offset g_szCatFmt, offset g_jobPath, offset szZipSuffix
+                invoke ZipCompressFile, offset g_jobPath, addr szGz, pLeaf
+            .ELSE
+                invoke wsprintfW, addr szGz, offset g_szCatFmt, offset g_jobPath, offset szGzSuffix
+                invoke GzCompressFile, offset g_jobPath, addr szGz
+            .ENDIF
             .IF eax != 0
                 invoke DeleteFileW, offset g_jobPath
                 invoke MoveFileExW, addr szGz, offset g_jobPath, MOVEFILE_REPLACE_EXISTING

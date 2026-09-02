@@ -811,6 +811,7 @@ WriteFile           PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD
 ReadFile            PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD
 SetFilePointerEx    PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD
 SetFileInformationByHandle PROTO :DWORD,:DWORD,:DWORD,:DWORD
+WideCharToMultiByte PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD
 SetEndOfFile        PROTO :DWORD
 AddVectoredExceptionHandler PROTO :DWORD,:DWORD
 CreateDirectoryW    PROTO :DWORD,:DWORD
@@ -1159,7 +1160,9 @@ ZfExpandFree        PROTO
 ZfClosePair         PROTO :DWORD,:DWORD,:DWORD  ; ok, hIn, pszDst -> ok (closes the session's output)
 ZfRunExpander       PROTO :DWORD,:DWORD,:DWORD  ; pszSrc, pszDst, body(hIn, pszDst) -> BOOL
 GzCompressFile      PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL; worker progress + Cancel
+ZipCompressFile     PROTO :DWORD,:DWORD,:DWORD  ; pszSrc, pszDst, pszEntry (UTF-16) -> BOOL, one deflated entry, zip64 past 4 GB
 EXTERNDEF g_saveGzip:DWORD                      ; save target ends in .gz: worker gzips the image
+EXTERNDEF g_saveZip:DWORD                       ; save target ends in .zip: worker zips it as one entry
 
 ; ---------------------------------------------------------------------------
 ; Optical containers (container.asm): NRG, MDS/MDF, CCD/IMG, GDI, TOC, generic scan
