@@ -34,6 +34,7 @@ WSTR szJobAdd, <Adding files>
 WSTR szCancelling, <Cancelling...>
 WSTR szGzSuffix, <.gz>
 WSTR szZipSuffix, <.zip>
+WSTR szCsoSuffix, <.cso>
 WSTR szIsoDot, <.iso>
 szPctFmt        dw '%','s','.','.','.',' ',' ','%','u','%','%',0
 szDotsFmt       dw '%','s','.','.','.',0
@@ -409,7 +410,7 @@ JobThreadProc PROC USES esi ebx lpParam:DWORD
     .IF eax == JOB_SAVE
         invoke IsoWrite, offset g_jobPath
         mov result, eax
-        .IF eax != 0 && (g_saveGzip != 0 || g_saveZip != 0)
+        .IF eax != 0 && (g_saveGzip != 0 || g_saveZip != 0 || g_saveCso != 0)
             ; second pass: compress the finished image beside itself, then take its place
             .IF g_saveZip != 0
                 ; the entry is named after the target, .zip.tmp -> .iso
@@ -422,6 +423,9 @@ JobThreadProc PROC USES esi ebx lpParam:DWORD
                 mov pLeaf, eax
                 invoke wsprintfW, addr szGz, offset g_szCatFmt, offset g_jobPath, offset szZipSuffix
                 invoke ZipCompressFile, offset g_jobPath, addr szGz, pLeaf
+            .ELSEIF g_saveCso != 0
+                invoke wsprintfW, addr szGz, offset g_szCatFmt, offset g_jobPath, offset szCsoSuffix
+                invoke CsoCompressFile, offset g_jobPath, addr szGz
             .ELSE
                 invoke wsprintfW, addr szGz, offset g_szCatFmt, offset g_jobPath, offset szGzSuffix
                 invoke GzCompressFile, offset g_jobPath, addr szGz

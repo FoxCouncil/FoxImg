@@ -1332,6 +1332,8 @@ g_dfHead        dd 0                    ; hash -> position + 1, 0 when empty
 g_dfPrev        dd 0                    ; position -> previous position + 1 on the same chain
 g_dfMDist       dd 0                    ; distance of the match DfLongestMatch found
 g_dfChainMax    dd DF_DEPTH             ; chain probes allowed for the next search
+g_dfHashMask    dd DF_HASHSZ - 1        ; hash table size in use (smaller for tiny blocks: less to clear)
+g_dfAllowStored dd 1                    ; DfEmitBlock may pick a stored block (off when the caller keeps its own plain copy)
 g_dfTok         dd 0                    ; one dword per token: literal, or bit 31 | lsym<<26 | (len-3)<<16 | dist-1
 g_dfTokN        dd 0
 g_dfExtraBits   dd 0                    ; length and distance extra bits owed by the matches so far
@@ -1964,7 +1966,7 @@ DfEmitBlock PROC USES esi edi ebx last:DWORD
     mov costStored, eax
     ; --- stored wins on incompressible data ---
     mov eax, costStored
-    .IF eax < costDyn && eax < costFix
+    .IF eax < costDyn && eax < costFix && g_dfAllowStored != 0
         mov esi, g_dfChunkPtr
         mov i, 0
         .WHILE g_dfErr == 0
@@ -2224,7 +2226,7 @@ DfInsert PROC USES esi edi pos:DWORD
     xor eax, edx
     movzx edx, byte ptr [esi + ecx + 2]
     xor eax, edx
-    and eax, DF_HASHSZ - 1
+    and eax, g_dfHashMask
     mov edi, g_dfHead
     mov edx, dword ptr [edi + eax * 4]      ; old head -> this position's prev
     inc ecx
@@ -2286,7 +2288,8 @@ DfCompressChunk PROC USES esi edi ebx last:DWORD
     LOCAL endPos:DWORD
     mov edi, g_dfHead
     xor eax, eax
-    mov ecx, DF_HASHSZ
+    mov ecx, g_dfHashMask
+    inc ecx
     rep stosd
     mov edi, offset g_dfFreqL
     mov ecx, 286 + 30
@@ -2381,16 +2384,8 @@ DfCompressChunk PROC USES esi edi ebx last:DWORD
     ret
 DfCompressChunk ENDP
 
-; Deflate hIn to hOut as one raw stream, byte-aligned at the end, with progress
-; totals and Cancel honoured. Leaves the input size, its CRC-32 and the stream
-; length in g_dfSize*, g_dfCrc, g_dfComp*. Returns TRUE on success.
-DfCompressStream PROC USES ebx hIn:DWORD, hOut:DWORD
-    LOCAL offLo:DWORD
-    LOCAL offHi:DWORD
-    LOCAL nRead:DWORD
-    LOCAL last:DWORD
-    LOCAL ok:DWORD
-    mov ok, FALSE
+; Buffers and state for a compressing session on hOut; FALSE when out of memory
+DfSetup PROC hOut:DWORD
     invoke DfInitTables
     invoke VfsAlloc, DF_CHUNK
     mov g_dfChunkPtr, eax
@@ -2403,7 +2398,8 @@ DfCompressStream PROC USES ebx hIn:DWORD, hOut:DWORD
     invoke VfsAlloc, DF_CHUNK * 4 + 16
     mov g_dfTok, eax
     .IF g_dfChunkPtr == 0 || g_dfOut == 0 || g_dfHead == 0 || g_dfPrev == 0 || g_dfTok == 0
-        jmp cleanup
+        xor eax, eax
+        ret
     .ENDIF
     mov eax, hOut
     mov g_dfHOut, eax
@@ -2414,6 +2410,40 @@ DfCompressStream PROC USES ebx hIn:DWORD, hOut:DWORD
     mov g_dfCompLo, 0
     mov g_dfCompHi, 0
     mov g_dfCrc, 0
+    mov g_dfHashMask, DF_HASHSZ - 1
+    mov g_dfAllowStored, 1
+    mov eax, TRUE
+    ret
+DfSetup ENDP
+
+DfTeardown PROC
+    invoke VfsFreeMem, g_dfChunkPtr
+    invoke VfsFreeMem, g_dfOut
+    invoke VfsFreeMem, g_dfHead
+    invoke VfsFreeMem, g_dfPrev
+    invoke VfsFreeMem, g_dfTok
+    mov g_dfTok, 0
+    mov g_dfChunkPtr, 0
+    mov g_dfOut, 0
+    mov g_dfHead, 0
+    mov g_dfPrev, 0
+    ret
+DfTeardown ENDP
+
+; Deflate hIn to hOut as one raw stream, byte-aligned at the end, with progress
+; totals and Cancel honoured. Leaves the input size, its CRC-32 and the stream
+; length in g_dfSize*, g_dfCrc, g_dfComp*. Returns TRUE on success.
+DfCompressStream PROC USES ebx hIn:DWORD, hOut:DWORD
+    LOCAL offLo:DWORD
+    LOCAL offHi:DWORD
+    LOCAL nRead:DWORD
+    LOCAL last:DWORD
+    LOCAL ok:DWORD
+    mov ok, FALSE
+    invoke DfSetup, hOut
+    .IF eax == 0
+        jmp cleanup
+    .ENDIF
     invoke FileSize64, hIn, offset g_dfSizeLo, offset g_dfSizeHi
     mov eax, g_dfSizeLo
     mov g_progTotal, eax
@@ -2470,16 +2500,7 @@ DfCompressStream PROC USES ebx hIn:DWORD, hOut:DWORD
         mov ok, TRUE
     .ENDIF
 cleanup:
-    invoke VfsFreeMem, g_dfChunkPtr
-    invoke VfsFreeMem, g_dfOut
-    invoke VfsFreeMem, g_dfHead
-    invoke VfsFreeMem, g_dfPrev
-    invoke VfsFreeMem, g_dfTok
-    mov g_dfTok, 0
-    mov g_dfChunkPtr, 0
-    mov g_dfOut, 0
-    mov g_dfHead, 0
-    mov g_dfPrev, 0
+    invoke DfTeardown
     mov eax, ok
     ret
 DfCompressStream ENDP
@@ -2827,6 +2848,229 @@ done:
     invoke DfClosePair, ok, hIn, hOut, pszDst
     ret
 ZipCompressFile ENDP
+
+; ---------------------------------------------------------------------------
+; CSO v1: 2 KB blocks, each a raw deflate stream or, when that would not be
+; smaller, the block itself (index top bit). Offsets are stored shifted by the
+; align field; it stays zero until the image is too large for 32-bit offsets.
+; ---------------------------------------------------------------------------
+CSO_BLOCK       equ 2048
+
+CsoCompressFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
+    LOCAL hIn:DWORD
+    LOCAL hOut:DWORD
+    LOCAL hdr[24]:BYTE
+    LOCAL nBlk:DWORD
+    LOCAL idxCb:DWORD
+    LOCAL pIdx:DWORD
+    LOCAL alignSh:DWORD
+    LOCAL posLo:DWORD                   ; file offset of the next block's data
+    LOCAL posHi:DWORD
+    LOCAL offLo:DWORD                   ; input offset
+    LOCAL offHi:DWORD
+    LOCAL i:DWORD
+    LOCAL thisCb:DWORD
+    LOCAL nRead:DWORD
+    LOCAL zero:DWORD
+    LOCAL ok:DWORD
+    mov ok, FALSE
+    mov pIdx, 0
+    mov zero, 0
+    invoke DfOpenPair, pszSrc, pszDst
+    .IF eax == 0
+        ret
+    .ENDIF
+    mov hIn, eax
+    mov hOut, edx
+    invoke DfSetup, hOut
+    .IF eax == 0
+        jmp done
+    .ENDIF
+    mov g_dfHashMask, 4095              ; 2 KB blocks: a small table, cheap to clear
+    mov g_dfAllowStored, 0              ; a block that will not shrink is kept plain below
+    invoke FileSize64, hIn, offset g_dfSizeLo, offset g_dfSizeHi
+    mov eax, g_dfSizeLo
+    mov g_progTotal, eax
+    mov eax, g_dfSizeHi
+    mov g_progTotalHi, eax
+    mov g_progDone, 0
+    mov g_progDoneHi, 0
+    ; blocks = ceil(total / 2048)
+    mov eax, g_dfSizeLo
+    mov edx, g_dfSizeHi
+    add eax, CSO_BLOCK - 1
+    adc edx, 0
+    shrd eax, edx, 11
+    shr edx, 11
+    .IF edx != 0 || eax == 0
+        jmp done
+    .ENDIF
+    mov nBlk, eax
+    inc eax
+    shl eax, 2
+    mov idxCb, eax
+    invoke VfsAlloc, idxCb
+    mov pIdx, eax
+    .IF eax == 0
+        jmp done
+    .ENDIF
+    ; offsets are shifted only when they would not fit in 31 bits
+    mov alignSh, 0
+    mov eax, g_dfSizeLo
+    mov edx, g_dfSizeHi
+    .WHILE edx != 0 || eax >= 7FF00000h
+        shrd eax, edx, 1
+        shr edx, 1
+        inc alignSh
+    .ENDW
+    ; header, then the index placeholder; the data starts right after
+    lea edi, hdr
+    mov dword ptr [edi], 4F534943h          ; "CISO"
+    mov dword ptr [edi + 4], 24
+    mov eax, g_dfSizeLo
+    mov dword ptr [edi + 8], eax
+    mov eax, g_dfSizeHi
+    mov dword ptr [edi + 12], eax
+    mov dword ptr [edi + 16], CSO_BLOCK
+    mov byte ptr [edi + 20], 1
+    mov eax, alignSh
+    mov byte ptr [edi + 21], al
+    mov word ptr [edi + 22], 0
+    invoke DfWriteRaw, edi, 24
+    invoke DfWriteRaw, pIdx, idxCb
+    mov eax, idxCb
+    add eax, 24
+    mov posLo, eax
+    mov posHi, 0
+    mov offLo, 0
+    mov offHi, 0
+    mov i, 0
+    .WHILE g_dfErr == 0
+        mov eax, i
+        .BREAK .IF eax >= nBlk
+        ; align the data start when offsets are shifted
+        .IF alignSh != 0
+            mov ecx, alignSh
+            mov eax, 1
+            shl eax, cl
+            dec eax
+            and eax, posLo
+            .IF eax != 0
+                mov ecx, alignSh
+                mov edx, 1
+                shl edx, cl
+                sub edx, eax                ; pad bytes
+                mov esi, g_dfOut
+                mov edi, esi
+                mov ecx, edx
+                push edx
+                xor eax, eax
+                rep stosb
+                pop edx
+                invoke DfWriteRaw, esi, edx
+                add posLo, edx
+                adc posHi, 0
+            .ENDIF
+        .ENDIF
+        ; index entry for this block
+        mov eax, posLo
+        mov edx, posHi
+        mov ecx, alignSh
+        shrd eax, edx, cl
+        mov ecx, i
+        mov esi, pIdx
+        mov dword ptr [esi + ecx * 4], eax
+        ; read one block
+        invoke FileReadAt, hIn, offLo, offHi, g_dfChunkPtr, CSO_BLOCK
+        mov nRead, eax
+        .IF eax == 0
+            mov g_dfErr, 1
+            .BREAK
+        .ENDIF
+        mov g_dfChunkLen, eax
+        add offLo, eax
+        adc offHi, 0
+        ; deflate it into the output buffer; nothing reaches the file yet
+        mov g_dfBitBuf, 0
+        mov g_dfBitCnt, 0
+        mov g_dfOutPos, 0
+        invoke DfCompressChunk, 1
+        .IF g_dfBitCnt != 0
+            invoke DfEmit, 0, 7
+            mov g_dfBitCnt, 0
+            mov g_dfBitBuf, 0
+        .ENDIF
+        .BREAK .IF g_dfErr != 0
+        mov eax, g_dfOutPos
+        .IF eax < nRead
+            invoke DfWriteRaw, g_dfOut, g_dfOutPos
+            mov eax, g_dfOutPos
+        .ELSE
+            mov ecx, i                      ; no gain: the block itself, flagged plain
+            mov esi, pIdx
+            or dword ptr [esi + ecx * 4], 80000000h
+            invoke DfWriteRaw, g_dfChunkPtr, nRead
+            mov eax, nRead
+        .ENDIF
+        mov g_dfOutPos, 0
+        add posLo, eax
+        adc posHi, 0
+        mov eax, nRead
+        add g_progDone, eax
+        adc g_progDoneHi, 0
+        .IF g_jobCancel != 0
+            mov g_dfErr, 1
+        .ENDIF
+        inc i
+    .ENDW
+    .IF g_dfErr != 0
+        jmp done
+    .ENDIF
+    ; the closing entry marks the end of the last block; with shifted offsets
+    ; that end must sit on the alignment too, or the shift floors a byte away
+    .IF alignSh != 0
+        mov ecx, alignSh
+        mov eax, 1
+        shl eax, cl
+        dec eax
+        and eax, posLo
+        .IF eax != 0
+            mov ecx, alignSh
+            mov edx, 1
+            shl edx, cl
+            sub edx, eax
+            mov edi, g_dfOut
+            mov ecx, edx
+            push edx
+            xor eax, eax
+            rep stosb
+            pop edx
+            invoke DfWriteRaw, g_dfOut, edx
+            add posLo, edx
+            adc posHi, 0
+        .ENDIF
+    .ENDIF
+    mov eax, posLo
+    mov edx, posHi
+    mov ecx, alignSh
+    shrd eax, edx, cl
+    mov ecx, nBlk
+    mov esi, pIdx
+    mov dword ptr [esi + ecx * 4], eax
+    invoke SetFilePointerEx, hOut, 24, 0, NULL, FILE_BEGIN
+    .IF eax == 0
+        jmp done
+    .ENDIF
+    invoke DfWriteRaw, pIdx, idxCb
+    .IF g_dfErr == 0
+        mov ok, TRUE
+    .ENDIF
+done:
+    invoke DfTeardown
+    invoke VfsFreeMem, pIdx
+    invoke DfClosePair, ok, hIn, hOut, pszDst
+    ret
+CsoCompressFile ENDP
 
 ; ---------------------------------------------------------------------------
 ; zlib wrapper (RFC 1950): 2-byte header, deflate stream, Adler-32 (not verified)

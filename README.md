@@ -13,7 +13,7 @@ The program is one small executable with no runtime dependencies.
 - Browse an image as a folder tree with a file list, preview pane, and status bar.
 - Add, rename, move, and delete files and folders inside an image.
 - Drag and drop in both directions: from Explorer into the image, and from the image to Explorer.
-- Save or convert any open image to ISO 9660 + Joliet + UDF 1.02, to BIN/CUE, or to a gzip- or zip-compressed ISO.
+- Save or convert any open image to ISO 9660 + Joliet + UDF 1.02, to BIN/CUE, to CSO, or to a gzip- or zip-compressed ISO.
 - Keep El Torito boot records through a save. BIOS and UEFI entries survive, and
   isolinux/GRUB boot info tables are patched for the new layout.
 - Open images of any size. A sliding 64 MB mapping window keeps memory use flat.
@@ -47,7 +47,7 @@ The program is one small executable with no runtime dependencies.
 | gzip | .iso.gz .gz | Yes | Yes | Any image inside; Save As writes a gzip ISO |
 | bzip2 | .iso.bz2 .bz2 | Yes | No | Any image inside |
 | zip | .zip | Yes | Yes | Reads the largest stored or deflated entry, CRC verified; Save As writes one deflated entry, zip64 past 4 GB |
-| CSO / CISO | .cso .ciso | Yes | No | v0/v1/v2; deflate and LZ4 blocks (PSP, Dreamcast tooling) |
+| CSO / CISO | .cso .ciso | Yes | Yes | Reads v0/v1/v2, deflate and LZ4 blocks (PSP, Dreamcast tooling); Save As writes v1 with 2 KB deflate blocks |
 | ZSO | .zso | Yes | No | CISO layout with LZ4 blocks |
 | DAX | .dax | Yes | No | PSP: zlib frames and raw NC areas |
 | JSO | .jso | Yes | No | PSP: deflate and LZO methods |
@@ -67,7 +67,7 @@ The program is one small executable with no runtime dependencies.
 | DMG | .dmg | Yes | No | Apple UDIF: zlib, bzip2, raw and zero chunks; ADC and lzfse declined |
 | Unknown containers | any | Yes | No | Signature scan finds an ISO 9660 volume at any offset |
 
-Read-only formats convert on save: open the image, then save it as ISO, BIN/CUE, gzip ISO, or zip.
+Read-only formats convert on save: open the image, then save it as ISO, BIN/CUE, CSO, gzip ISO, or zip.
 
 CD audio tracks (from cue sheets, Alcohol images and CHDs) show up as `TrackNN.wav`
 pseudo-files: extraction writes real WAV files, and a double-click plays the track.

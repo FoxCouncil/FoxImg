@@ -1161,8 +1161,10 @@ ZfClosePair         PROTO :DWORD,:DWORD,:DWORD  ; ok, hIn, pszDst -> ok (closes 
 ZfRunExpander       PROTO :DWORD,:DWORD,:DWORD  ; pszSrc, pszDst, body(hIn, pszDst) -> BOOL
 GzCompressFile      PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL; worker progress + Cancel
 ZipCompressFile     PROTO :DWORD,:DWORD,:DWORD  ; pszSrc, pszDst, pszEntry (UTF-16) -> BOOL, one deflated entry, zip64 past 4 GB
+CsoCompressFile     PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, CSO v1 with 2 KB deflate blocks
 EXTERNDEF g_saveGzip:DWORD                      ; save target ends in .gz: worker gzips the image
 EXTERNDEF g_saveZip:DWORD                       ; save target ends in .zip: worker zips it as one entry
+EXTERNDEF g_saveCso:DWORD                       ; save target ends in .cso: worker packs it as CSO
 
 ; ---------------------------------------------------------------------------
 ; Optical containers (container.asm): NRG, MDS/MDF, CCD/IMG, GDI, TOC, generic scan
