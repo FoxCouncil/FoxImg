@@ -13,7 +13,7 @@ The program is one small executable with no runtime dependencies.
 - Browse an image as a folder tree with a file list, preview pane, and status bar.
 - Add, rename, move, and delete files and folders inside an image.
 - Drag and drop in both directions: from Explorer into the image, and from the image to Explorer.
-- Save or convert any open image to ISO 9660 + Joliet + UDF 1.02, to BIN/CUE (2048 or raw), to cdrdao TOC, CloneCD or ECM with the sector EDC and ECC generated, to a gzip- or zip-compressed ISO, or to CSO, ISZ, DAX, JSO, GCZ, UIF, DAA or DMG.
+- Save or convert any open image to ISO 9660 + Joliet + UDF 1.02, to BIN/CUE (2048 or raw), to cdrdao TOC, CloneCD, Nero, Alcohol 120% or ECM with the sector EDC and ECC generated, to a gzip- or zip-compressed ISO, or to CSO, ISZ, DAX, JSO, GCZ, UIF, DAA or DMG.
 - Keep El Torito boot records through a save. BIOS and UEFI entries survive, and
   isolinux/GRUB boot info tables are patched for the new layout.
 - Open images of any size. A sliding 64 MB mapping window keeps memory use flat.
@@ -41,8 +41,8 @@ The convert returns exit code 0 on success and prints one line to the console it
 | Raw sectors | .bin .img | Yes | No | MODE1/2352, MODE2/2352, MODE2/2336, detected by sync sniff |
 | BIN/CUE | .cue .bin | Yes | Yes | Writes MODE1/2048, or MODE1/2352 raw with the EDC and ECC generated; cue sheet included |
 | Files over 4 GB | - | Yes | Yes | Stored in the UDF half only, as Windows install media does |
-| Nero | .nrg | Yes | No | v1 and v2, DAO and TAO chunk lists |
-| Alcohol 120% | .mds .mdf | Yes | No | First data track of the first session |
+| Nero | .nrg | Yes | Yes | Reads v1 and v2, DAO and TAO chunk lists; writes v2 DAO with one raw track |
+| Alcohol 120% | .mds .mdf | Yes | Yes | Reads the first data track of the first session; writes one raw track |
 | Alcohol MDX | .mdx | Yes | No | Single-file v2 descriptor; encrypted and compressed declined |
 | CloneCD | .ccd .img | Yes | Yes | Raw image beside the sheet; writes one MODE1 track with its TOC entries |
 | DiscJuggler | .cdi | Yes | No | Found by signature scan |

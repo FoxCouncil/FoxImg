@@ -1221,26 +1221,20 @@ RawFixMode1 PROC USES edi pSector:DWORD
     ret
 RawFixMode1 ENDP
 
-; Rewrite a 2048-byte-sector image as MODE1/2352 raw sectors
-RawWrapFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
-    LOCAL hIn:DWORD
-    LOCAL hOut:DWORD
+; The open session's input as MODE1/2352 raw sectors to its output; g_dfErr
+; on failure. The input must be whole 2048-byte sectors.
+RawStream PROC USES esi edi ebx hIn:DWORD
     LOCAL off[2]:DWORD
     LOCAL lba:DWORD
     LOCAL n:DWORD
     LOCAL i:DWORD
-    LOCAL ok:DWORD
-    mov ok, FALSE
     invoke RawInitTables
-    invoke WrBegin, pszSrc, pszDst
-    .IF eax == 0
-        ret
-    .ENDIF
-    mov hIn, eax
-    mov hOut, edx
     mov eax, g_dfSizeLo
     test eax, 2047
-    jnz done
+    .IF !ZERO?
+        mov g_dfErr, 1
+        ret
+    .ENDIF
     mov off[0], 0
     mov off[4], 0
     mov lba, 0
@@ -1266,13 +1260,116 @@ RawWrapFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
         imul eax, 2352
         invoke DfWriteRaw, g_dfOut, eax
     .ENDW
+    ret
+RawStream ENDP
+
+; Rewrite a 2048-byte-sector image as MODE1/2352 raw sectors
+RawWrapFile PROC pszSrc:DWORD, pszDst:DWORD
+    LOCAL hIn:DWORD
+    LOCAL hOut:DWORD
+    LOCAL ok:DWORD
+    mov ok, FALSE
+    invoke WrBegin, pszSrc, pszDst
+    .IF eax == 0
+        ret
+    .ENDIF
+    mov hIn, eax
+    mov hOut, edx
+    invoke RawStream, hIn
+    .IF g_dfErr == 0
+        mov ok, TRUE
+    .ENDIF
+    invoke WrEnd, ok, hIn, hOut, pszDst
+    ret
+RawWrapFile ENDP
+
+; ---------------------------------------------------------------------------
+; NRG (Nero, v2): the raw sectors, then the chunk area (big-endian: CUEX cue
+; entries, DAOX with one 2352-byte MODE1 track, SINF, MTYP, END!) and the
+; 12-byte "NER5" footer holding the chunk area's offset
+; ---------------------------------------------------------------------------
+NrgBE32 PROC pDst:DWORD, v:DWORD
+    mov eax, v
+    bswap eax
+    mov ecx, pDst
+    mov dword ptr [ecx], eax
+    ret
+NrgBE32 ENDP
+
+NrgWrapFile PROC USES edi pszSrc:DWORD, pszDst:DWORD
+    LOCAL hIn:DWORD
+    LOCAL hOut:DWORD
+    LOCAL ok:DWORD
+    LOCAL sectors:DWORD
+    LOCAL chunkLo:DWORD
+    LOCAL chunkHi:DWORD
+    LOCAL area[160]:BYTE
+    mov ok, FALSE
+    invoke WrBegin, pszSrc, pszDst
+    .IF eax == 0
+        ret
+    .ENDIF
+    mov hIn, eax
+    mov hOut, edx
+    invoke RawStream, hIn
+    .IF g_dfErr != 0
+        jmp done
+    .ENDIF
+    mov eax, g_dfSizeLo
+    mov edx, g_dfSizeHi
+    shrd eax, edx, 11
+    mov sectors, eax                        ; the chunk area starts where the raw data ends
+    mov eax, g_dfCompLo
+    mov chunkLo, eax
+    mov eax, g_dfCompHi
+    mov chunkHi, eax
+    lea edi, area
+    xor eax, eax
+    mov ecx, 40
+    rep stosd
+    lea edi, area
+    ; CUEX: 4 entries of mode, track (BCD), index, 0, LBA
+    mov dword ptr [edi], 'XEUC'
+    invoke NrgBE32, addr area[4], 32
+    mov dword ptr [edi + 8], 00000041h      ; track 0 index 0 at -150
+    invoke NrgBE32, addr area[12], -150
+    mov dword ptr [edi + 16], 00000141h     ; track 1 index 0 at -150
+    invoke NrgBE32, addr area[20], -150
+    mov dword ptr [edi + 24], 00010141h     ; track 1 index 1 at 0
+    invoke NrgBE32, addr area[28], 0
+    mov dword ptr [edi + 32], 0001AA41h     ; lead-out
+    invoke NrgBE32, addr area[36], sectors
+    ; DAOX at 40: payload at 48 = size, MCN (13) and pad, toc type, first and last track; the track block at 70
+    mov dword ptr [edi + 40], 'XOAD'
+    invoke NrgBE32, addr area[44], 64
+    invoke NrgBE32, addr area[48], 64
+    mov byte ptr [edi + 67], 1     ; toc type 0001
+    mov byte ptr [edi + 68], 1     ; first track
+    mov byte ptr [edi + 69], 1     ; last track
+    mov word ptr [edi + 82], 3009h ; sector size 2352, big-endian
+    mov byte ptr [edi + 84], 5    ; MODE1 raw
+    invoke NrgBE32, addr area[104], g_dfCompHi     ; end offset (pregap and start stay 0)
+    invoke NrgBE32, addr area[108], g_dfCompLo
+    ; SINF at 112: tracks in the session; MTYP at 124: CD-ROM; END! at 136
+    mov dword ptr [edi + 112], 'FNIS'
+    invoke NrgBE32, addr area[116], 4
+    invoke NrgBE32, addr area[120], 1
+    mov dword ptr [edi + 124], 'PYTM'
+    invoke NrgBE32, addr area[128], 4
+    invoke NrgBE32, addr area[132], 1
+    mov dword ptr [edi + 136], '!DNE'
+    ; footer at 144
+    mov dword ptr [edi + 144], '5REN'
+    invoke NrgBE32, addr area[148], chunkHi
+    invoke NrgBE32, addr area[152], chunkLo
+    invoke DfWriteRaw, addr area, 156
     .IF g_dfErr == 0
         mov ok, TRUE
     .ENDIF
 done:
     invoke WrEnd, ok, hIn, hOut, pszDst
     ret
-RawWrapFile ENDP
+NrgWrapFile ENDP
 
 ; ---------------------------------------------------------------------------
 ; ECM (Error Code Modeler): "ECM\0", then records with a varint head (type in

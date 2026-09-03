@@ -1180,6 +1180,7 @@ DmgCompressFile     PROTO :DWORD,:DWORD
 RawWrapFile         PROTO :DWORD,:DWORD        ; 2048-sector image -> MODE1/2352 raw with EDC/ECC
 RawFixMode1         PROTO :DWORD               ; EDC and parity of one MODE1 sector, in place
 EcmWrapFile         PROTO :DWORD,:DWORD        ; 2048-sector image -> .ecm
+NrgWrapFile         PROTO :DWORD,:DWORD        ; 2048-sector image -> Nero .nrg (raw)
 ; the compressor session pieces those writers share
 DfSetup             PROTO :DWORD               ; hOut -> BOOL
 DfTeardown          PROTO
@@ -1193,6 +1194,8 @@ EXTERNDEF g_dfOut:DWORD
 EXTERNDEF g_dfErr:DWORD
 EXTERNDEF g_dfSizeLo:DWORD
 EXTERNDEF g_dfSizeHi:DWORD
+EXTERNDEF g_dfCompLo:DWORD                      ; bytes written by the session so far
+EXTERNDEF g_dfCompHi:DWORD
 EXTERNDEF g_saveKind:DWORD                      ; SAVE_*: how the worker finishes the image after IsoWrite
 SAVE_NONE               equ 0
 SAVE_GZ                 equ 1
@@ -1206,7 +1209,8 @@ SAVE_UIF                equ 8
 SAVE_DAA                equ 9
 SAVE_DMG                equ 10
 SAVE_ECM                equ 11
-SAVE_RAW                equ 12              ; raw MODE1/2352 data for the cue, toc and ccd descriptors
+SAVE_NRG                equ 12
+SAVE_RAW                equ 13              ; raw MODE1/2352 data for the cue, toc, ccd and mds descriptors
 
 ; ---------------------------------------------------------------------------
 ; Optical containers (container.asm): NRG, MDS/MDF, CCD/IMG, GDI, TOC, generic scan

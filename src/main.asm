@@ -44,6 +44,9 @@ WSTR szExtTocDot, <.toc>
 WSTR szExtCcdDot, <.ccd>
 WSTR szExtImgDot, <.img>
 WSTR szExtEcmDot, <.ecm>
+WSTR szExtNrgDot, <.nrg>
+WSTR szExtMdsDot, <.mds>
+WSTR szExtMdfDot, <.mdf>
 WSTR szExtIszDot, <.isz>
 WSTR szExtDaxDot, <.dax>
 WSTR szExtJsoDot, <.jso>
@@ -54,7 +57,7 @@ WSTR szExtDmgDot, <.dmg>
 ; save extensions in SAVE_* order: the index plus one is the kind
 g_saveExts  dd offset szExtGzDot, offset szExtZipDot, offset szExtCsoDot, offset szExtIszDot, offset szExtDaxDot
             dd offset szExtJsoDot, offset szExtGczDot, offset szExtUifDot, offset szExtDaaDot, offset szExtDmgDot
-            dd offset szExtEcmDot, 0
+            dd offset szExtEcmDot, offset szExtNrgDot, 0
 WSTR szTmpSuffix, <.tmp>
 WSTR szSwRaw, </raw>
 szCliOk     db 'FoxImg: wrote ', 0
@@ -99,6 +102,10 @@ szFilterSave LABEL WORD
     dw '*','.','t','o','c',0
     dw 'C','l','o','n','e','C','D',' ','(','*','.','c','c','d',')',0
     dw '*','.','c','c','d',0
+    dw 'N','e','r','o',' ','i','m','a','g','e',' ','(','*','.','n','r','g',')',0
+    dw '*','.','n','r','g',0
+    dw 'A','l','c','o','h','o','l',' ','1','2','0','%',' ','(','*','.','m','d','s',')',0
+    dw '*','.','m','d','s',0
     dw 0
 szFilterAll LABEL WORD
     dw 'A','l','l',' ','F','i','l','e','s',' ','(','*','.','*',')',0
@@ -117,6 +124,43 @@ DESC_NONE   equ 0
 DESC_CUE    equ 1
 DESC_TOC    equ 2
 DESC_CCD    equ 3
+DESC_MDS    equ 4
+; Alcohol 120% descriptor for one MODE1/2352 track in the sibling .mdf; the
+; lead-out and track length are patched in
+g_mdsTemplate   db 04Dh, 045h, 044h, 049h, 041h, 020h, 044h, 045h, 053h, 043h, 052h, 049h, 050h, 054h, 04Fh, 052h
+                db 001h, 003h, 000h, 000h, 001h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h
+                db 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h
+                db 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h
+                db 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h
+                db 058h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 06Ah, 0FFh, 0FFh, 0FFh, 000h, 000h, 000h, 000h
+                db 001h, 000h, 004h, 003h, 001h, 000h, 001h, 000h, 000h, 000h, 000h, 000h, 070h, 000h, 000h, 000h
+                db 000h, 000h, 014h, 000h, 0A0h, 000h, 000h, 000h, 000h, 001h, 000h, 000h, 000h, 000h, 000h, 000h
+                db 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h
+                db 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h
+                db 001h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h
+                db 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h
+                db 000h, 000h, 014h, 000h, 0A1h, 000h, 000h, 000h, 000h, 001h, 000h, 000h, 000h, 000h, 000h, 000h
+                db 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h
+                db 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h
+                db 001h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h
+                db 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h
+                db 000h, 000h, 014h, 000h, 0A2h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h
+                db 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h
+                db 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h
+                db 001h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h
+                db 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h
+                db 0AAh, 000h, 014h, 000h, 001h, 000h, 000h, 000h, 000h, 000h, 002h, 000h, 0B0h, 001h, 000h, 000h
+                db 030h, 009h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h
+                db 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h
+                db 001h, 000h, 000h, 000h, 0B8h, 001h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h
+                db 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h
+                db 096h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 0C8h, 001h, 000h, 000h, 001h, 000h, 000h, 000h
+                db 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 02Ah, 000h, 02Eh, 000h, 06Dh, 000h, 064h, 000h
+                db 066h, 000h, 000h, 000h
+MDS_TEMPLATE_CB equ 468
+MDS_SESSION_END equ 92
+MDS_A2_PMIN     equ 281
+MDS_EXTRA_LEN   equ 436
 szTocFmt    dw 'C','D','_','R','O','M',13,10
             dw 13,10
             dw '/','/',' ','T','r','a','c','k',' ','1',13,10
@@ -362,7 +406,7 @@ WriteDescFile PROC pszDesc:DWORD, pszData:DWORD
     .ELSEIF eax == DESC_TOC
         invoke PathLeaf, pszData
         invoke WriteTextFile, pszDesc, offset szTocFmt, eax
-    .ELSEIF eax == DESC_CCD
+    .ELSEIF eax == DESC_CCD || eax == DESC_MDS
         ; the lead-out sits after the last sector; MSF counts from 00:02:00
         invoke FileOpenRead, pszData
         .IF eax == INVALID_HANDLE_VALUE
@@ -387,8 +431,22 @@ WriteDescFile PROC pszDesc:DWORD, pszData:DWORD
         div ecx
         mov secs, edx
         mov mins, eax
-        invoke wsprintfA, addr szText, offset szCcdFmt, mins, secs, frames, sectors
-        invoke WriteAllFile, pszDesc, addr szText, eax
+        .IF g_saveDesc == DESC_CCD
+            invoke wsprintfA, addr szText, offset szCcdFmt, mins, secs, frames, sectors
+            invoke WriteAllFile, pszDesc, addr szText, eax
+        .ELSE
+            invoke RtlMoveMemory, addr szText, offset g_mdsTemplate, MDS_TEMPLATE_CB
+            mov eax, sectors
+            mov dword ptr szText[MDS_SESSION_END], eax
+            mov dword ptr szText[MDS_EXTRA_LEN], eax
+            mov eax, mins
+            mov byte ptr szText[MDS_A2_PMIN], al
+            mov eax, secs
+            mov byte ptr szText[MDS_A2_PMIN + 1], al
+            mov eax, frames
+            mov byte ptr szText[MDS_A2_PMIN + 2], al
+            invoke WriteAllFile, pszDesc, addr szText, MDS_TEMPLATE_CB
+        .ENDIF
     .ELSE
         xor eax, eax
     .ENDIF
@@ -431,12 +489,22 @@ SaveClassify PROC pszTarget:DWORD
                 invoke lstrcpynW, offset g_saveCue, addr szTarget, MAX_PATH
                 invoke PathWithExt, offset g_saveData, addr szTarget, offset szExtBinDot
             .ELSE
+                push ecx
                 invoke lstrcmpiW, ecx, offset szExtCcdDot
+                pop ecx
                 .IF eax == 0
                     mov g_saveDesc, DESC_CCD
                     mov g_saveFilter, SAVE_FILTER_RAW
                     invoke lstrcpynW, offset g_saveCue, addr szTarget, MAX_PATH
                     invoke PathWithExt, offset g_saveData, addr szTarget, offset szExtImgDot
+                .ELSE
+                    invoke lstrcmpiW, ecx, offset szExtMdsDot
+                    .IF eax == 0
+                        mov g_saveDesc, DESC_MDS
+                        mov g_saveFilter, SAVE_FILTER_RAW
+                        invoke lstrcpynW, offset g_saveCue, addr szTarget, MAX_PATH
+                        invoke PathWithExt, offset g_saveData, addr szTarget, offset szExtMdfDot
+                    .ENDIF
                 .ENDIF
             .ENDIF
         .ENDIF
