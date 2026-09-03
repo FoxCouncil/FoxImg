@@ -54,7 +54,7 @@ g_saveSuffix    dd offset szGzSuffix, offset szZipSuffix, offset szCsoSuffix, of
                 dd offset szEcmSuffix, offset szNrgSuffix, offset szZsoSuffix, offset szChdSuffix, offset szBz2Suffix, offset szRawSuffix
 g_saveWriter    dd offset GzCompressFile, 0, offset CsoCompressFile, offset IszCompressFile, offset DaxCompressFile
                 dd offset JsoCompressFile, offset GczCompressFile, offset UifCompressFile, offset DaaCompressFile, offset DmgCompressFile
-                dd offset EcmWrapFile, offset NrgWrapFile, offset ZsoCompressFile, offset ChdWriteFile, offset BzCompressFile, offset RawWrapFile
+                dd offset EcmWrapFile, offset NrgWrapFile, offset ZsoCompressFile, offset ChdWriteCdFile, offset BzCompressFile, offset RawWrapFile
 WSTR szIsoDot, <.iso>
 szPctFmt        dw '%','s','.','.','.',' ',' ','%','u','%','%',0
 szDotsFmt       dw '%','s','.','.','.',0
