@@ -1495,4 +1495,148 @@ done:
     ret
 EcmWrapFile ENDP
 
+; ---------------------------------------------------------------------------
+; LZ4 block encoder (ZSO, CISO v2): greedy, one hash-table candidate per
+; position, matches of 4 or more within 65535 bytes. The table holds
+; positions and is never cleared: a stale entry is just a candidate that the
+; byte compare rejects. The last five bytes are always literals and no match
+; starts within the last twelve, as the format requires.
+; ---------------------------------------------------------------------------
+LZ4_HASH_BITS   equ 12
+
+.data?
+g_lz4Head       dd (1 shl LZ4_HASH_BITS) dup(?)
+.code
+
+; cb bytes at pSrc into pDst (room for cb + cb / 255 + 16); the length in eax
+Lz4Compress PROC USES esi edi ebx pSrc:DWORD, cb:DWORD, pDst:DWORD
+    LOCAL anchor:DWORD                      ; first byte not yet emitted
+    LOCAL ip:DWORD
+    LOCAL mlimit:DWORD                      ; matches may start before this
+    LOCAL mend:DWORD                        ; and extend up to this
+    LOCAL cand:DWORD
+    LOCAL mlen:DWORD
+    LOCAL pTok:DWORD
+    mov esi, pSrc
+    mov edi, pDst
+    mov anchor, 0
+    mov ip, 0
+    mov eax, cb
+    sub eax, 12
+    mov mlimit, eax
+    mov eax, cb
+    sub eax, 5
+    mov mend, eax
+    .IF cb >= 13
+        .WHILE 1
+            mov ebx, ip
+            .BREAK .IF ebx >= mlimit
+            mov eax, dword ptr [esi + ebx]
+            imul eax, -1640531535               ; 9E3779B1h, Knuth's multiplicative hash
+            shr eax, 32 - LZ4_HASH_BITS
+            mov ecx, g_lz4Head[eax * 4]
+            mov g_lz4Head[eax * 4], ebx
+            mov cand, ecx
+            .IF ecx < ebx
+                mov edx, ebx
+                sub edx, ecx
+                .IF edx <= 65535
+                    mov eax, dword ptr [esi + ecx]
+                    .IF eax == dword ptr [esi + ebx]
+                        ; extend past the four bytes
+                        mov mlen, 4
+                        .WHILE 1
+                            mov eax, ip
+                            add eax, mlen
+                            .BREAK .IF eax >= mend
+                            mov edx, cand
+                            add edx, mlen
+                            mov cl, byte ptr [esi + edx]
+                            .BREAK .IF cl != byte ptr [esi + eax]
+                            inc mlen
+                        .ENDW
+                        ; token, literal length, literals
+                        mov pTok, edi
+                        inc edi
+                        mov eax, ip
+                        sub eax, anchor
+                        mov ecx, eax                    ; literal count
+                        .IF eax >= 15
+                            mov byte ptr [edi - 1], 0F0h
+                            sub eax, 15
+                            .WHILE eax >= 255
+                                mov byte ptr [edi], 255
+                                inc edi
+                                sub eax, 255
+                            .ENDW
+                            mov byte ptr [edi], al
+                            inc edi
+                        .ELSE
+                            shl eax, 4
+                            mov byte ptr [edi - 1], al
+                        .ENDIF
+                        push esi
+                        add esi, anchor
+                        rep movsb
+                        pop esi
+                        ; offset, then the match length past four
+                        mov eax, ip
+                        sub eax, cand
+                        mov word ptr [edi], ax
+                        add edi, 2
+                        mov eax, mlen
+                        sub eax, 4
+                        .IF eax >= 15
+                            mov ecx, pTok
+                            or byte ptr [ecx], 15
+                            sub eax, 15
+                            .WHILE eax >= 255
+                                mov byte ptr [edi], 255
+                                inc edi
+                                sub eax, 255
+                            .ENDW
+                            mov byte ptr [edi], al
+                            inc edi
+                        .ELSE
+                            mov ecx, pTok
+                            or byte ptr [ecx], al
+                        .ENDIF
+                        mov eax, ip
+                        add eax, mlen
+                        mov ip, eax
+                        mov anchor, eax
+                        .CONTINUE
+                    .ENDIF
+                .ENDIF
+            .ENDIF
+            inc ip
+        .ENDW
+    .ENDIF
+    ; the closing literals
+    mov eax, cb
+    sub eax, anchor
+    mov ecx, eax
+    .IF eax >= 15
+        mov byte ptr [edi], 0F0h
+        inc edi
+        sub eax, 15
+        .WHILE eax >= 255
+            mov byte ptr [edi], 255
+            inc edi
+            sub eax, 255
+        .ENDW
+        mov byte ptr [edi], al
+        inc edi
+    .ELSE
+        shl eax, 4
+        mov byte ptr [edi], al
+        inc edi
+    .ENDIF
+    add esi, anchor
+    rep movsb
+    mov eax, edi
+    sub eax, pDst
+    ret
+Lz4Compress ENDP
+
 END

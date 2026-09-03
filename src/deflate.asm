@@ -2944,7 +2944,8 @@ ZipCompressFile ENDP
 ; ---------------------------------------------------------------------------
 CSO_BLOCK       equ 2048
 
-CsoCompressFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
+; lz4 picks ZISO with LZ4 blocks over CISO with deflate blocks
+CsoWrite PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD, lz4:DWORD
     LOCAL hIn:DWORD
     LOCAL hOut:DWORD
     LOCAL hdr[24]:BYTE
@@ -3014,6 +3015,9 @@ CsoCompressFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
     ; header, then the index placeholder; the data starts right after
     lea edi, hdr
     mov dword ptr [edi], 4F534943h          ; "CISO"
+    .IF lz4 != 0
+        mov dword ptr [edi], 4F53495Ah      ; "ZISO"
+    .ENDIF
     mov dword ptr [edi + 4], 24
     mov eax, g_dfSizeLo
     mov dword ptr [edi + 8], eax
@@ -3078,15 +3082,20 @@ CsoCompressFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
         mov g_dfChunkLen, eax
         add offLo, eax
         adc offHi, 0
-        ; deflate it into the output buffer; nothing reaches the file yet
-        mov g_dfBitBuf, 0
-        mov g_dfBitCnt, 0
-        mov g_dfOutPos, 0
-        invoke DfCompressChunk, 1
-        .IF g_dfBitCnt != 0
-            invoke DfEmit, 0, 7
-            mov g_dfBitCnt, 0
+        ; pack it into the output buffer; nothing reaches the file yet
+        .IF lz4 != 0
+            invoke Lz4Compress, g_dfChunkPtr, nRead, g_dfOut
+            mov g_dfOutPos, eax
+        .ELSE
             mov g_dfBitBuf, 0
+            mov g_dfBitCnt, 0
+            mov g_dfOutPos, 0
+            invoke DfCompressChunk, 1
+            .IF g_dfBitCnt != 0
+                invoke DfEmit, 0, 7
+                mov g_dfBitCnt, 0
+                mov g_dfBitBuf, 0
+            .ENDIF
         .ENDIF
         .BREAK .IF g_dfErr != 0
         mov eax, g_dfOutPos
@@ -3158,7 +3167,17 @@ done:
     invoke VfsFreeMem, pIdx
     invoke DfClosePair, ok, hIn, hOut, pszDst
     ret
+CsoWrite ENDP
+
+CsoCompressFile PROC pszSrc:DWORD, pszDst:DWORD
+    invoke CsoWrite, pszSrc, pszDst, 0
+    ret
 CsoCompressFile ENDP
+
+ZsoCompressFile PROC pszSrc:DWORD, pszDst:DWORD
+    invoke CsoWrite, pszSrc, pszDst, 1
+    ret
+ZsoCompressFile ENDP
 
 ; ---------------------------------------------------------------------------
 ; zlib wrapper (RFC 1950): 2-byte header, deflate stream, Adler-32 (not verified)

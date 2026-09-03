@@ -56,7 +56,7 @@ The convert returns exit code 0 on success and prints one line to the console it
 | bzip2 | .iso.bz2 .bz2 | Yes | No | Any image inside |
 | zip | .zip | Yes | Yes | Reads the largest stored or deflated entry, CRC verified; Save As writes one deflated entry, zip64 past 4 GB |
 | CSO / CISO | .cso .ciso | Yes | Yes | Reads v0/v1/v2, deflate and LZ4 blocks (PSP, Dreamcast tooling); Save As writes v1 with 2 KB deflate blocks |
-| ZSO | .zso | Yes | No | CISO layout with LZ4 blocks |
+| ZSO | .zso | Yes | Yes | CISO layout with LZ4 blocks |
 | DAX | .dax | Yes | Yes | PSP: zlib frames and raw NC areas; writes 8 KB zlib frames |
 | JSO | .jso | Yes | Yes | PSP: reads deflate and LZO methods; writes deflate, 2 KB blocks |
 | PBP | .pbp | Yes | No | PS1 Classics EBOOT (PSISOIMG); multi-disc takes disc 1; encrypted PSP UMD declined |
@@ -97,7 +97,7 @@ chunk by chunk - an ISZ may hold zlib and bzip2 blocks in one image.
 | LZMA | Yes | CHD hunks; DAA v0x110 and LZMA-compressed RVZ later |
 | bzip2 | Yes | .bz2, ISZ and DMG chunks; bzip2-compressed RVZ later |
 | Zstandard | Yes | RVZ groups and tables |
-| LZ4 | Yes | ZSO, CISO v2 |
+| LZ4 | Yes | ZSO, CISO v2; Save As ZSO encodes 2 KB blocks |
 | FLAC | Yes | CHD cdfl and flac hunks (16-bit stereo) |
 | LZO1X | Yes | JSO method 0 |
 | CD-ROM EDC/ECC (generate) | Yes | Raw BIN/CUE, TOC, CCD and ECM writers; the ECM and CHD readers restore the parity those formats strip |

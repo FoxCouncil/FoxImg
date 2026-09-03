@@ -1170,6 +1170,8 @@ ZfRunExpander       PROTO :DWORD,:DWORD,:DWORD  ; pszSrc, pszDst, body(hIn, pszD
 GzCompressFile      PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL; worker progress + Cancel
 ZipCompressFile     PROTO :DWORD,:DWORD,:DWORD  ; pszSrc, pszDst, pszEntry (UTF-16) -> BOOL, one deflated entry, zip64 past 4 GB
 CsoCompressFile     PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, CSO v1 with 2 KB deflate blocks
+ZsoCompressFile     PROTO :DWORD,:DWORD        ; the same with LZ4 blocks (ZISO)
+Lz4Compress         PROTO :DWORD,:DWORD,:DWORD ; pSrc, cb, pDst -> length
 IszCompressFile     PROTO :DWORD,:DWORD        ; the block-container writers in writers.asm
 DaxCompressFile     PROTO :DWORD,:DWORD
 JsoCompressFile     PROTO :DWORD,:DWORD
@@ -1210,7 +1212,8 @@ SAVE_DAA                equ 9
 SAVE_DMG                equ 10
 SAVE_ECM                equ 11
 SAVE_NRG                equ 12
-SAVE_RAW                equ 13              ; raw MODE1/2352 data for the cue, toc, ccd and mds descriptors
+SAVE_ZSO                equ 13
+SAVE_RAW                equ 14              ; raw MODE1/2352 data for the cue, toc, ccd and mds descriptors
 
 ; ---------------------------------------------------------------------------
 ; Optical containers (container.asm): NRG, MDS/MDF, CCD/IMG, GDI, TOC, generic scan
