@@ -23,6 +23,14 @@ The program is one small executable with no runtime dependencies.
 - CD audio tracks appear as TrackNN.wav files: extract them as real WAVs, or
   double-click one to play it. Audio-only discs open too (CUE, MDS, CHD).
 
+## Command line
+
+    FoxImg image.iso                  open an image
+    FoxImg image.iso out.isz          convert without a window; the format follows the extension
+    FoxImg image.iso out.cue /raw     BIN/CUE with MODE1/2352 raw sectors
+
+The convert returns exit code 0 on success and prints one line to the console it was started from.
+
 ## Format support
 
 | Format | Extensions | Read | Write | Notes |
@@ -31,7 +39,7 @@ The program is one small executable with no runtime dependencies.
 | UDF 1.02 - 2.60 | .iso | Yes | Yes | Writes a 1.02 bridge volume; reads metadata, virtual, and sparable partitions |
 | El Torito boot | - | Yes | Yes | BIOS and UEFI entries; boot info table patching; FAT size detection for UEFI images |
 | Raw sectors | .bin .img | Yes | No | MODE1/2352, MODE2/2352, MODE2/2336, detected by sync sniff |
-| BIN/CUE | .cue .bin | Yes | Yes | Writes MODE1/2048 with a generated cue sheet |
+| BIN/CUE | .cue .bin | Yes | Yes | Writes MODE1/2048, or MODE1/2352 raw with the EDC and ECC generated; cue sheet included |
 | Files over 4 GB | - | Yes | Yes | Stored in the UDF half only, as Windows install media does |
 | Nero | .nrg | Yes | No | v1 and v2, DAO and TAO chunk lists |
 | Alcohol 120% | .mds .mdf | Yes | No | First data track of the first session |
@@ -92,6 +100,7 @@ chunk by chunk - an ISZ may hold zlib and bzip2 blocks in one image.
 | LZ4 | Yes | ZSO, CISO v2 |
 | FLAC | Yes | CHD cdfl and flac hunks (16-bit stereo) |
 | LZO1X | Yes | JSO method 0 |
+| CD-ROM EDC/ECC (generate) | Yes | Save As raw BIN/CUE: ECMA-130 EDC and P/Q parity for every MODE1 sector |
 
 ## Download
 

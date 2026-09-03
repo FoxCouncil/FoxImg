@@ -323,6 +323,10 @@ ISO_VD_ROOT_RECORD      equ 156         ; 34-byte directory record for root
 ; Win32 prototypes
 ; ---------------------------------------------------------------------------
 ExitProcess         PROTO :DWORD
+AttachConsole       PROTO :DWORD
+GetStdHandle        PROTO :DWORD
+ATTACH_PARENT_PROCESS equ 0FFFFFFFFh          ; consoleapi.h: (DWORD)-1
+STD_OUTPUT_HANDLE   equ 0FFFFFFF5h              ; winbase.h: (DWORD)-11
 GetModuleHandleW    PROTO :DWORD
 GetCommandLineW     PROTO
 CreateFileW         PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD
@@ -1081,6 +1085,7 @@ JobCancel           PROTO
 JobOnTimer          PROTO
 JobOnDone           PROTO :DWORD                ; result
 JobStartSave        PROTO :DWORD                ; pszTmpPath -> BOOL started
+JobRunSave          PROTO :DWORD                ; pszTmpPath or 0 -> BOOL, synchronous
 JobNodesReset       PROTO
 JobNodesAdd         PROTO :DWORD,:DWORD         ; pNode, lParam (UiForEachSelected callback shape)
 JobStartExtract     PROTO :DWORD                ; pszDir -> BOOL
@@ -1172,6 +1177,7 @@ GczCompressFile     PROTO :DWORD,:DWORD
 UifCompressFile     PROTO :DWORD,:DWORD
 DaaCompressFile     PROTO :DWORD,:DWORD
 DmgCompressFile     PROTO :DWORD,:DWORD
+RawWrapFile         PROTO :DWORD,:DWORD        ; 2048-sector image -> MODE1/2352 raw with EDC/ECC
 ; the compressor session pieces those writers share
 DfSetup             PROTO :DWORD               ; hOut -> BOOL
 DfTeardown          PROTO
@@ -1197,6 +1203,7 @@ SAVE_GCZ                equ 7
 SAVE_UIF                equ 8
 SAVE_DAA                equ 9
 SAVE_DMG                equ 10
+SAVE_RAW                equ 11              ; BIN/CUE as MODE1/2352
 
 ; ---------------------------------------------------------------------------
 ; Optical containers (container.asm): NRG, MDS/MDF, CCD/IMG, GDI, TOC, generic scan

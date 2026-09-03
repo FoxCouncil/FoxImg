@@ -42,11 +42,14 @@ WSTR szGczSuffix, <.gcz>
 WSTR szUifSuffix, <.uif>
 WSTR szDaaSuffix, <.daa>
 WSTR szDmgSuffix, <.dmg>
+WSTR szRawSuffix, <.raw>
 ; indexed by SAVE_* - 1: the suffix the second pass writes beside the image, and its writer
 g_saveSuffix    dd offset szGzSuffix, offset szZipSuffix, offset szCsoSuffix, offset szIszSuffix, offset szDaxSuffix
                 dd offset szJsoSuffix, offset szGczSuffix, offset szUifSuffix, offset szDaaSuffix, offset szDmgSuffix
+                dd offset szRawSuffix
 g_saveWriter    dd offset GzCompressFile, 0, offset CsoCompressFile, offset IszCompressFile, offset DaxCompressFile
                 dd offset JsoCompressFile, offset GczCompressFile, offset UifCompressFile, offset DaaCompressFile, offset DmgCompressFile
+                dd offset RawWrapFile
 WSTR szIsoDot, <.iso>
 szPctFmt        dw '%','s','.','.','.',' ',' ','%','u','%','%',0
 szDotsFmt       dw '%','s','.','.','.',0
@@ -411,51 +414,65 @@ JobStartAdd ENDP
 ; ---------------------------------------------------------------------------
 ; Worker thread
 ; ---------------------------------------------------------------------------
-JobThreadProc PROC USES esi ebx lpParam:DWORD
+; The save itself: the image to g_jobPath (pszTmpPath first copied there when
+; given), then the second pass when a container or raw sectors were asked for.
+; Runs on the worker thread, and on the main thread for a command-line convert.
+JobRunSave PROC USES esi ebx pszTmpPath:DWORD
     LOCAL result:DWORD
     LOCAL szGz[MAX_PATH + 8]:WORD
     LOCAL szEntry[MAX_PATH]:WORD
     LOCAL szEntry2[MAX_PATH]:WORD
     LOCAL pLeaf:DWORD
+    .IF pszTmpPath != 0
+        invoke lstrcpynW, offset g_jobPath, pszTmpPath, MAX_PATH
+    .ENDIF
+    invoke IsoWrite, offset g_jobPath
+    mov result, eax
+    .IF eax != 0 && g_saveKind != SAVE_NONE
+        ; second pass: pack the finished image beside itself, then take its place
+        mov eax, g_saveKind
+        dec eax
+        mov ecx, dword ptr g_saveSuffix[eax * 4]
+        invoke wsprintfW, addr szGz, offset g_szCatFmt, offset g_jobPath, ecx
+        .IF g_saveKind == SAVE_ZIP
+            ; the entry is named after the target, .zip.tmp -> .iso
+            invoke lstrcpynW, addr szEntry, offset g_jobPath, MAX_PATH
+            invoke lstrlenW, addr szEntry
+            lea ecx, szEntry
+            mov word ptr [ecx + eax * 2 - 8], 0     ; drop ".tmp"
+            invoke PathWithExt, addr szEntry2, addr szEntry, offset szIsoDot
+            invoke PathLeaf, addr szEntry2
+            mov pLeaf, eax
+            invoke ZipCompressFile, offset g_jobPath, addr szGz, pLeaf
+        .ELSE
+            mov eax, g_saveKind
+            dec eax
+            mov eax, dword ptr g_saveWriter[eax * 4]
+            lea ecx, szGz
+            push ecx
+            push offset g_jobPath
+            call eax
+        .ENDIF
+        .IF eax != 0
+            invoke DeleteFileW, offset g_jobPath
+            invoke MoveFileExW, addr szGz, offset g_jobPath, MOVEFILE_REPLACE_EXISTING
+            mov result, eax
+        .ELSE
+            invoke DeleteFileW, addr szGz
+            mov result, FALSE
+        .ENDIF
+    .ENDIF
+    mov eax, result
+    ret
+JobRunSave ENDP
+
+JobThreadProc PROC USES esi ebx lpParam:DWORD
+    LOCAL result:DWORD
     mov result, FALSE
     mov eax, g_jobKind
     .IF eax == JOB_SAVE
-        invoke IsoWrite, offset g_jobPath
+        invoke JobRunSave, 0
         mov result, eax
-        .IF eax != 0 && g_saveKind != SAVE_NONE
-            ; second pass: pack the finished image beside itself, then take its place
-            mov eax, g_saveKind
-            dec eax
-            mov ecx, dword ptr g_saveSuffix[eax * 4]
-            invoke wsprintfW, addr szGz, offset g_szCatFmt, offset g_jobPath, ecx
-            .IF g_saveKind == SAVE_ZIP
-                ; the entry is named after the target, .zip.tmp -> .iso
-                invoke lstrcpynW, addr szEntry, offset g_jobPath, MAX_PATH
-                invoke lstrlenW, addr szEntry
-                lea ecx, szEntry
-                mov word ptr [ecx + eax * 2 - 8], 0     ; drop ".tmp"
-                invoke PathWithExt, addr szEntry2, addr szEntry, offset szIsoDot
-                invoke PathLeaf, addr szEntry2
-                mov pLeaf, eax
-                invoke ZipCompressFile, offset g_jobPath, addr szGz, pLeaf
-            .ELSE
-                mov eax, g_saveKind
-                dec eax
-                mov eax, dword ptr g_saveWriter[eax * 4]
-                lea ecx, szGz
-                push ecx
-                push offset g_jobPath
-                call eax
-            .ENDIF
-            .IF eax != 0
-                invoke DeleteFileW, offset g_jobPath
-                invoke MoveFileExW, addr szGz, offset g_jobPath, MOVEFILE_REPLACE_EXISTING
-                mov result, eax
-            .ELSE
-                invoke DeleteFileW, addr szGz
-                mov result, FALSE
-            .ENDIF
-        .ENDIF
     .ELSEIF eax == JOB_EXTRACT
         mov result, TRUE
         xor ebx, ebx

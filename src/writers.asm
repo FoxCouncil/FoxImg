@@ -1045,4 +1045,224 @@ done:
     ret
 DmgCompressFile ENDP
 
+; ---------------------------------------------------------------------------
+; Raw MODE1 sectors (ECMA-130): sync, BCD minute:second:frame header, the
+; 2048 bytes, EDC (CRC-32 over polynomial 8001801Bh, reflected), 8 zero bytes,
+; then P and Q Reed-Solomon parity over GF(256) with x^8+x^4+x^3+x^2+1. The
+; tables are built on first use. Checked byte for byte against a pressed
+; disc in build\zraw.py.
+; ---------------------------------------------------------------------------
+RAW_BATCH       equ 256                 ; sectors per pass: 512 KB in, 588 KB out
+
+.data
+g_rawReady      dd 0
+.data?
+g_rawF          db 256 dup(?)           ; times 2 in GF(256)
+g_rawB          db 256 dup(?)           ; inverse of times 3
+g_rawEdc        dd 256 dup(?)
+.code
+
+RawInitTables PROC
+    .IF g_rawReady != 0
+        ret
+    .ENDIF
+    xor ecx, ecx
+    .WHILE ecx < 256
+        mov eax, ecx
+        shl eax, 1
+        .IF ecx & 80h
+            xor eax, 11Dh
+        .ENDIF
+        and eax, 0FFh
+        mov g_rawF[ecx], al
+        xor eax, ecx
+        mov g_rawB[eax], cl
+        mov eax, ecx
+        mov edx, 8
+        .WHILE edx != 0
+            shr eax, 1
+            .IF CARRY?
+                xor eax, 0D8018001h
+            .ENDIF
+            dec edx
+        .ENDW
+        mov g_rawEdc[ecx * 4], eax
+        inc ecx
+    .ENDW
+    mov g_rawReady, 1
+    ret
+RawInitTables ENDP
+
+; EDC of cb bytes at pData
+RawEdc PROC USES esi pData:DWORD, cb:DWORD
+    mov esi, pData
+    mov ecx, cb
+    xor eax, eax
+    .WHILE ecx != 0
+        movzx edx, byte ptr [esi]
+        xor dl, al
+        movzx edx, dl
+        shr eax, 8
+        xor eax, g_rawEdc[edx * 4]
+        inc esi
+        dec ecx
+    .ENDW
+    ret
+RawEdc ENDP
+
+; One parity pass (P or Q) over the sector body at pSrc into pDst
+RawEcc PROC USES esi edi ebx pSrc:DWORD, majorCount:DWORD, minorCount:DWORD, majorMult:DWORD, minorInc:DWORD, pDst:DWORD
+    LOCAL total:DWORD
+    LOCAL major:DWORD
+    mov eax, majorCount
+    imul eax, minorCount
+    mov total, eax
+    mov esi, pSrc
+    mov edi, pDst
+    mov major, 0
+    .WHILE 1
+        mov eax, major
+        .BREAK .IF eax >= majorCount
+        shr eax, 1
+        imul eax, majorMult
+        mov edx, major
+        and edx, 1
+        add edx, eax                        ; index
+        xor ebx, ebx                        ; bl: ecc_a, bh: ecc_b
+        mov ecx, minorCount
+        .WHILE ecx != 0
+            mov al, byte ptr [esi + edx]
+            add edx, minorInc
+            .IF edx >= total
+                sub edx, total
+            .ENDIF
+            xor bl, al
+            xor bh, al
+            movzx eax, bl
+            mov bl, g_rawF[eax]
+            dec ecx
+        .ENDW
+        movzx eax, bl
+        mov al, g_rawF[eax]
+        xor al, bh
+        movzx eax, al
+        mov al, g_rawB[eax]
+        mov ecx, major
+        mov byte ptr [edi + ecx], al
+        add ecx, majorCount
+        xor al, bh
+        mov byte ptr [edi + ecx], al
+        inc major
+    .ENDW
+    ret
+RawEcc ENDP
+
+RawBcd PROC v:DWORD
+    mov eax, v
+    xor edx, edx
+    mov ecx, 10
+    div ecx
+    shl eax, 4
+    or eax, edx
+    ret
+RawBcd ENDP
+
+; One MODE1 sector at pDst from the 2048 bytes at pSrc for this LBA
+RawBuildSector PROC USES esi edi pDst:DWORD, pSrc:DWORD, lba:DWORD
+    mov edi, pDst
+    mov byte ptr [edi], 0
+    mov dword ptr [edi + 1], 0FFFFFFFFh
+    mov dword ptr [edi + 5], 0FFFFFFFFh
+    mov word ptr [edi + 9], 0FFFFh
+    mov byte ptr [edi + 11], 0
+    mov eax, lba
+    add eax, 150
+    xor edx, edx
+    mov ecx, 75
+    div ecx
+    mov esi, eax                            ; whole seconds
+    invoke RawBcd, edx
+    mov byte ptr [edi + 14], al
+    mov eax, esi
+    xor edx, edx
+    mov ecx, 60
+    div ecx
+    mov esi, eax                            ; minutes
+    invoke RawBcd, edx
+    mov byte ptr [edi + 13], al
+    invoke RawBcd, esi
+    mov byte ptr [edi + 12], al
+    mov byte ptr [edi + 15], 1
+    mov esi, pSrc
+    add edi, 16
+    mov ecx, 512
+    rep movsd
+    mov edi, pDst
+    invoke RawEdc, edi, 2064
+    mov dword ptr [edi + 2064], eax
+    mov dword ptr [edi + 2068], 0
+    mov dword ptr [edi + 2072], 0
+    lea eax, [edi + 12]
+    lea ecx, [edi + 2076]
+    invoke RawEcc, eax, 86, 24, 2, 86, ecx  ; P
+    mov edi, pDst
+    lea eax, [edi + 12]
+    lea ecx, [edi + 2248]
+    invoke RawEcc, eax, 52, 43, 86, 88, ecx ; Q
+    ret
+RawBuildSector ENDP
+
+; Rewrite a 2048-byte-sector image as MODE1/2352 raw sectors
+RawWrapFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
+    LOCAL hIn:DWORD
+    LOCAL hOut:DWORD
+    LOCAL off[2]:DWORD
+    LOCAL lba:DWORD
+    LOCAL n:DWORD
+    LOCAL i:DWORD
+    LOCAL ok:DWORD
+    mov ok, FALSE
+    invoke RawInitTables
+    invoke WrBegin, pszSrc, pszDst
+    .IF eax == 0
+        ret
+    .ENDIF
+    mov hIn, eax
+    mov hOut, edx
+    mov eax, g_dfSizeLo
+    test eax, 2047
+    jnz done
+    mov off[0], 0
+    mov off[4], 0
+    mov lba, 0
+    .WHILE g_dfErr == 0
+        invoke WrReadBlock, hIn, addr off, RAW_BATCH * 2048
+        .BREAK .IF eax == 0
+        shr eax, 11
+        mov n, eax                          ; sectors in this batch
+        mov i, 0
+        .WHILE 1
+            mov eax, i
+            .BREAK .IF eax >= n
+            imul eax, 2352
+            add eax, g_dfOut
+            mov ecx, i
+            shl ecx, 11
+            add ecx, g_dfChunkPtr
+            invoke RawBuildSector, eax, ecx, lba
+            inc lba
+            inc i
+        .ENDW
+        mov eax, n
+        imul eax, 2352
+        invoke DfWriteRaw, g_dfOut, eax
+    .ENDW
+    .IF g_dfErr == 0
+        mov ok, TRUE
+    .ENDIF
+done:
+    invoke WrEnd, ok, hIn, hOut, pszDst
+    ret
+RawWrapFile ENDP
+
 END

@@ -9,6 +9,9 @@ g_hWnd      dd 0
 g_hAccel    dd 0
 g_saveIsCue dd 0
 g_saveKind  dd 0
+g_saveFilter dd 0                       ; nFilterIndex from the last save dialog
+g_saveRaw   dd 0                        ; cue sheet says MODE1/2352
+g_cliRaw    dd 0                        ; /raw on the command line
 
 WSTR szClassName, <FoxImgMain>
 WSTR szTitle, <FoxImg>
@@ -48,6 +51,10 @@ WSTR szExtDmgDot, <.dmg>
 g_saveExts  dd offset szExtGzDot, offset szExtZipDot, offset szExtCsoDot, offset szExtIszDot, offset szExtDaxDot
             dd offset szExtJsoDot, offset szExtGczDot, offset szExtUifDot, offset szExtDaaDot, offset szExtDmgDot, 0
 WSTR szTmpSuffix, <.tmp>
+WSTR szSwRaw, </raw>
+szCliOk     db 'FoxImg: wrote ', 0
+szCliFail   db 'FoxImg: convert failed', 13, 10, 0
+szCrLf      db 13, 10, 0
 WSTR szNewFolderName, <New Folder>
 WSTR szNewFileName, <New File>
 
@@ -58,6 +65,8 @@ szFilterSave LABEL WORD
     dw 'R','a','w',' ','I','m','a','g','e',' ','(','*','.','i','m','g',')',0
     dw '*','.','i','m','g',0
     dw 'B','I','N','/','C','U','E',' ','(','*','.','b','i','n',')',0
+    dw '*','.','b','i','n',0
+    dw 'B','I','N','/','C','U','E',' ','r','a','w',' ','(','M','O','D','E','1','/','2','3','5','2',')',0
     dw '*','.','b','i','n',0
     dw 'g','z','i','p',' ','I','S','O',' ','(','*','.','i','s','o','.','g','z',')',0
     dw '*','.','g','z',0
@@ -88,12 +97,17 @@ szFilterAll LABEL WORD
 szCueFmt    dw 'F','I','L','E',' ','"','%','s','"',' ','B','I','N','A','R','Y',13,10
             dw ' ',' ','T','R','A','C','K',' ','0','1',' ','M','O','D','E','1','/','2','0','4','8',13,10
             dw ' ',' ',' ',' ','I','N','D','E','X',' ','0','1',' ','0','0',':','0','0',':','0','0',13,10,0
+szCueRawFmt dw 'F','I','L','E',' ','"','%','s','"',' ','B','I','N','A','R','Y',13,10
+            dw ' ',' ','T','R','A','C','K',' ','0','1',' ','M','O','D','E','1','/','2','3','5','2',13,10
+            dw ' ',' ',' ',' ','I','N','D','E','X',' ','0','1',' ','0','0',':','0','0',':','0','0',13,10,0
+SAVE_FILTER_RAW equ 4                   ; the "BIN/CUE raw" entry of szFilterSave
 MULTI_BUF   equ 32768
 
 .data?
 g_szMulti   dw MULTI_BUF dup(?)
 g_saveData  dw MAX_PATH dup(?)
 g_saveCue   dw MAX_PATH dup(?)
+g_cliOut    dw MAX_PATH dup(?)          ; second command-line path: convert headless and exit
 g_saveTmp   dw MAX_PATH + 8 dup(?)
 g_szFilter  dw 512 dup(?)
 
@@ -134,6 +148,8 @@ SaveDialog PROC pszOut:DWORD, pszFilter:DWORD, pszDefExt:DWORD, pszTitle:DWORD
     pop ofn.lpstrDefExt
     mov ofn.Flags, OFN_EXPLORER or OFN_OVERWRITEPROMPT or OFN_PATHMUSTEXIST or OFN_HIDEREADONLY
     invoke GetSaveFileNameW, addr ofn
+    mov ecx, ofn.nFilterIndex
+    mov g_saveFilter, ecx
     ret
 SaveDialog ENDP
 
@@ -187,7 +203,11 @@ WriteCueFile PROC USES esi edi pszCue:DWORD, pszBin:DWORD
     LOCAL szAscii[512]:BYTE
     LOCAL hOut:DWORD
     invoke PathLeaf, pszBin
-    invoke wsprintfW, addr szText, offset szCueFmt, eax
+    mov ecx, offset szCueFmt
+    .IF g_saveRaw != 0
+        mov ecx, offset szCueRawFmt
+    .ENDIF
+    invoke wsprintfW, addr szText, ecx, eax
     lea esi, szText
     lea edi, szAscii
     .WHILE word ptr [esi] != 0
@@ -213,12 +233,15 @@ WriteCueFile PROC USES esi edi pszCue:DWORD, pszBin:DWORD
     ret
 WriteCueFile ENDP
 
-; Save / convert to pszTarget on the worker thread. Format follows the extension:
-; .bin/.cue -> BIN + CUE, anything else -> ISO. SaveFinish swaps the .tmp in and reopens.
-SaveBegin PROC pszTarget:DWORD
+; Work out what pszTarget asks for: .bin/.cue -> BIN + CUE (raw when the raw
+; filter was picked), a container extension -> ISO then that container, anything
+; else -> ISO. Fills g_saveIsCue, g_saveRaw, g_saveKind, g_saveData, g_saveCue and
+; the .tmp path the writer targets.
+SaveClassify PROC pszTarget:DWORD
     LOCAL szTarget[MAX_PATH]:WORD
     invoke lstrcpynW, addr szTarget, pszTarget, MAX_PATH
     mov g_saveIsCue, FALSE
+    mov g_saveRaw, FALSE
     mov g_saveKind, SAVE_NONE
     invoke PathExt, addr szTarget
     push eax
@@ -255,10 +278,77 @@ SaveBegin PROC pszTarget:DWORD
             invoke lstrcpynW, offset g_saveData, addr szTarget, MAX_PATH
         .ENDIF
     .ENDIF
+    .IF g_saveIsCue != 0 && g_saveFilter == SAVE_FILTER_RAW
+        mov g_saveRaw, TRUE                 ; second pass turns the 2048 image into raw sectors
+        mov g_saveKind, SAVE_RAW
+    .ENDIF
     invoke wsprintfW, offset g_saveTmp, offset g_szCatFmt, offset g_saveData, offset szTmpSuffix
+    ret
+SaveClassify ENDP
+
+; Save / convert to pszTarget on the worker thread. SaveFinish swaps the .tmp in and reopens.
+SaveBegin PROC pszTarget:DWORD
+    invoke SaveClassify, pszTarget
     invoke JobStartSave, offset g_saveTmp
     ret
 SaveBegin ENDP
+
+; Command line: open g_szPath, write it as g_cliOut, no window. TRUE on success.
+CliConvert PROC
+    LOCAL ok:DWORD
+    LOCAL hCon:DWORD
+    LOCAL written:DWORD
+    LOCAL cb:DWORD
+    LOCAL szOut[MAX_PATH]:BYTE
+    mov ok, FALSE
+    invoke IsoOpen, offset g_szPath
+    .IF eax != 0
+        invoke VfsBuildFromIso
+        invoke BootParse
+        .IF g_cliRaw != 0
+            mov g_saveFilter, SAVE_FILTER_RAW
+        .ENDIF
+        invoke SaveClassify, offset g_cliOut
+        invoke JobRunSave, offset g_saveTmp
+        .IF eax != 0
+            invoke IsoClose
+            invoke MoveFileExW, offset g_saveTmp, offset g_saveData, MOVEFILE_REPLACE_EXISTING
+            .IF eax != 0
+                mov ok, TRUE
+                .IF g_saveIsCue != 0
+                    invoke WriteCueFile, offset g_saveCue, offset g_saveData
+                    mov ok, eax
+                .ENDIF
+            .ENDIF
+        .ELSE
+            invoke DeleteFileW, offset g_saveTmp
+        .ENDIF
+    .ENDIF
+    ; one line to the console this was started from, when there is one
+    invoke AttachConsole, ATTACH_PARENT_PROCESS
+    .IF eax != 0
+        invoke GetStdHandle, STD_OUTPUT_HANDLE
+        mov hCon, eax
+        .IF ok != 0
+            invoke lstrlenA, offset szCliOk
+            mov cb, eax
+            invoke WriteFile, hCon, offset szCliOk, cb, addr written, NULL
+            invoke WideCharToMultiByte, CP_ACP, 0, offset g_cliOut, -1, addr szOut, MAX_PATH, NULL, NULL
+            invoke lstrlenA, addr szOut
+            mov cb, eax
+            invoke WriteFile, hCon, addr szOut, cb, addr written, NULL
+            invoke lstrlenA, offset szCrLf
+            mov cb, eax
+            invoke WriteFile, hCon, offset szCrLf, cb, addr written, NULL
+        .ELSE
+            invoke lstrlenA, offset szCliFail
+            mov cb, eax
+            invoke WriteFile, hCon, offset szCliFail, cb, addr written, NULL
+        .ENDIF
+    .ENDIF
+    mov eax, ok
+    ret
+CliConvert ENDP
 
 SaveFinish PROC result:DWORD
     .IF g_jobCancel != 0
@@ -645,24 +735,13 @@ AppCommand PROC id:DWORD
 AppCommand ENDP
 
 ; ---------------------------------------------------------------------------
-; ParseCommandLine - first argument after the program name into g_szPath
+; Command line: FoxImg [image [output [/raw]]]. The image goes to g_szPath; an
+; output path to g_cliOut asks for a headless convert.
 ; ---------------------------------------------------------------------------
-ParseCommandLine PROC USES esi edi
-    invoke GetCommandLineW
-    mov esi, eax
-    .IF word ptr [esi] == '"'
-        add esi, 2
-        .WHILE word ptr [esi] != 0 && word ptr [esi] != '"'
-            add esi, 2
-        .ENDW
-        .IF word ptr [esi] == '"'
-            add esi, 2
-        .ENDIF
-    .ELSE
-        .WHILE word ptr [esi] != 0 && word ptr [esi] != ' '
-            add esi, 2
-        .ENDW
-    .ENDIF
+; One argument from pSrc into pDst (quotes stripped, MAX_PATH bound); returns the
+; position after it, or 0 when none is left
+CliArg PROC USES esi edi pSrc:DWORD, pDst:DWORD
+    mov esi, pSrc
     .WHILE word ptr [esi] == ' ' || word ptr [esi] == 9
         add esi, 2
     .ENDW
@@ -670,22 +749,57 @@ ParseCommandLine PROC USES esi edi
         xor eax, eax
         ret
     .ENDIF
-    mov edi, offset g_szPath
+    mov edi, pDst
     mov ecx, MAX_PATH - 1
+    mov edx, ' '
     .IF word ptr [esi] == '"'
         add esi, 2
-        .WHILE ecx != 0 && word ptr [esi] != 0 && word ptr [esi] != '"'
-            movsw
-            dec ecx
-        .ENDW
-    .ELSE
-        .WHILE ecx != 0 && word ptr [esi] != 0 && word ptr [esi] != ' '
-            movsw
-            dec ecx
-        .ENDW
+        mov edx, '"'
     .ENDIF
-    xor eax, eax
-    stosw
+    .WHILE word ptr [esi] != 0
+        movzx eax, word ptr [esi]
+        .BREAK .IF eax == edx
+        .BREAK .IF edx == ' ' && eax == 9
+        .IF ecx != 0
+            mov word ptr [edi], ax
+            add edi, 2
+            dec ecx
+        .ENDIF
+        add esi, 2
+    .ENDW
+    .IF word ptr [esi] == '"'
+        add esi, 2
+    .ENDIF
+    mov word ptr [edi], 0
+    mov eax, esi
+    ret
+CliArg ENDP
+
+ParseCommandLine PROC USES esi
+    LOCAL szArg[MAX_PATH]:WORD
+    invoke GetCommandLineW
+    mov esi, eax
+    invoke CliArg, esi, addr szArg          ; the program itself
+    mov esi, eax
+    invoke CliArg, esi, offset g_szPath
+    .IF eax == 0
+        ret
+    .ENDIF
+    mov esi, eax
+    .WHILE 1
+        invoke CliArg, esi, addr szArg
+        .BREAK .IF eax == 0
+        mov esi, eax
+        .IF word ptr szArg[0] == '/' || word ptr szArg[0] == '-'
+            mov word ptr szArg[0], '/'
+            invoke lstrcmpiW, addr szArg, offset szSwRaw
+            .IF eax == 0
+                mov g_cliRaw, TRUE
+            .ENDIF
+        .ELSE
+            invoke lstrcpynW, offset g_cliOut, addr szArg, MAX_PATH
+        .ENDIF
+    .ENDW
     mov eax, TRUE
     ret
 ParseCommandLine ENDP
@@ -828,6 +942,12 @@ start PROC
     mov g_hInst, eax
     invoke VfsInit
     invoke DndInit
+    invoke ParseCommandLine
+    .IF word ptr g_cliOut[0] != 0           ; FoxImg image output [/raw]: convert and leave
+        invoke CliConvert
+        xor eax, 1
+        invoke ExitProcess, eax
+    .ENDIF
 
     mov icc.dwSize, sizeof INITCOMMONCONTROLSEX
     mov icc.dwICC, ICC_LISTVIEW_CLASSES or ICC_TREEVIEW_CLASSES or ICC_BAR_CLASSES or ICC_PROGRESS_CLASS
@@ -871,8 +991,7 @@ start PROC
     invoke ShowWindow, g_hWnd, SW_SHOWDEFAULT
     invoke UpdateWindow, g_hWnd
 
-    invoke ParseCommandLine
-    .IF eax != 0
+    .IF word ptr g_szPath[0] != 0
         invoke OpenImage, offset g_szPath
     .ELSE
         xor eax, eax
