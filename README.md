@@ -53,7 +53,7 @@ The convert returns exit code 0 on success and prints one line to the console it
 | 3DO | .iso .cue (Opera) | Yes | No | Volume label, directory chains, copies |
 | CD-i | .iso .bin | Yes | No | Green Book descriptors beside CD001 |
 | gzip | .iso.gz .gz | Yes | Yes | Any image inside; Save As writes a gzip ISO |
-| bzip2 | .iso.bz2 .bz2 | Yes | No | Any image inside |
+| bzip2 | .iso.bz2 .bz2 | Yes | Yes | Any image inside; Save As writes a bzip2 ISO |
 | zip | .zip | Yes | Yes | Reads the largest stored or deflated entry, CRC verified; Save As writes one deflated entry, zip64 past 4 GB |
 | CSO / CISO | .cso .ciso | Yes | Yes | Reads v0/v1/v2, deflate and LZ4 blocks (PSP, Dreamcast tooling); Save As writes v1 with 2 KB deflate blocks |
 | ZSO | .zso | Yes | Yes | CISO layout with LZ4 blocks |
@@ -96,6 +96,7 @@ chunk by chunk - an ISZ may hold zlib and bzip2 blocks in one image.
 | DEFLATE (compress) | Yes | Save As gzip ISO: lazy matching over a 32 KB window; per block the cheaper of dynamic Huffman, fixed, or stored |
 | LZMA | Yes | CHD hunks; DAA v0x110 and LZMA-compressed RVZ later |
 | bzip2 | Yes | .bz2, ISZ and DMG chunks; bzip2-compressed RVZ later |
+| bzip2 (compress) | Yes | Save As bzip2 ISO: 900 KB blocks, Burrows-Wheeler by prefix doubling, one Huffman table |
 | Zstandard | Yes | RVZ groups and tables |
 | LZ4 | Yes | ZSO, CISO v2; Save As ZSO encodes 2 KB blocks |
 | FLAC | Yes | CHD cdfl and flac hunks (16-bit stereo) |

@@ -1180,6 +1180,8 @@ ZipCompressFile     PROTO :DWORD,:DWORD,:DWORD  ; pszSrc, pszDst, pszEntry (UTF-
 CsoCompressFile     PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, CSO v1 with 2 KB deflate blocks
 ZsoCompressFile     PROTO :DWORD,:DWORD        ; the same with LZ4 blocks (ZISO)
 ChdWriteFile        PROTO :DWORD,:DWORD        ; CHD v5, uncompressed hunks, SHA-1 filled
+BzCompressFile      PROTO :DWORD,:DWORD        ; any file -> .bz2
+DfBuildLengths      PROTO :DWORD,:DWORD,:DWORD,:DWORD ; pFreq (dwords), n, pLen (bytes), maxBits
 Lz4Compress         PROTO :DWORD,:DWORD,:DWORD ; pSrc, cb, pDst -> length
 IszCompressFile     PROTO :DWORD,:DWORD        ; the block-container writers in writers.asm
 DaxCompressFile     PROTO :DWORD,:DWORD
@@ -1208,6 +1210,7 @@ EXTERNDEF g_dfSizeHi:DWORD
 EXTERNDEF g_dfCompLo:DWORD                      ; bytes written by the session so far
 EXTERNDEF g_dfCompHi:DWORD
 EXTERNDEF szChdMagic:BYTE
+EXTERNDEF g_dfOutPos:DWORD
 EXTERNDEF g_saveKind:DWORD                      ; SAVE_*: how the worker finishes the image after IsoWrite
 SAVE_NONE               equ 0
 SAVE_GZ                 equ 1
@@ -1224,7 +1227,8 @@ SAVE_ECM                equ 11
 SAVE_NRG                equ 12
 SAVE_ZSO                equ 13
 SAVE_CHD                equ 14
-SAVE_RAW                equ 15              ; raw MODE1/2352 data for the cue, toc, ccd and mds descriptors
+SAVE_BZ2                equ 15
+SAVE_RAW                equ 16              ; raw MODE1/2352 data for the cue, toc, ccd and mds descriptors
 
 ; ---------------------------------------------------------------------------
 ; Optical containers (container.asm): NRG, MDS/MDF, CCD/IMG, GDI, TOC, generic scan

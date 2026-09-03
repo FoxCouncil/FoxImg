@@ -1843,4 +1843,662 @@ done:
     ret
 ChdWriteFile ENDP
 
+; ---------------------------------------------------------------------------
+; bzip2 encoder, the mirror of build\zbzenc.py: RLE1 into 900 KB blocks, a
+; cyclic Burrows-Wheeler sort by prefix doubling over counting sorts, move to
+; front with RUNA/RUNB zero runs, one length-limited Huffman code sent as the
+; two tables the format demands, bits most significant first. The block CRC
+; is bzip2's own (CRC-32 with the polynomial unreflected).
+; ---------------------------------------------------------------------------
+BE_LEVEL        equ 9
+BE_BLOCKMAX     equ BE_LEVEL * 100000 - 19
+BE_ALPHA        equ 258
+BE_MAXLEN       equ 17
+BE_OUTFLUSH     equ 1024 * 1024 - 64      ; g_dfOut is DF_OUTBUF (1 MB)
+
+.data
+g_beBlock       dd 0                    ; RLE1 output, BE_BLOCKMAX + 16 bytes
+g_beSA          dd 0                    ; dwords, one per block byte
+g_beRank        dd 0
+g_beRank2       dd 0
+g_beTmp         dd 0                    ; dwords; doubles as the last column (bytes)
+g_beCnt         dd 0                    ; dwords, max(n, 256) + 1
+g_beSyms        dd 0                    ; words, BE_BLOCKMAX + 2
+g_beAcc         dd 0
+g_beBits        dd 0
+g_beN           dd 0
+g_beNSyms       dd 0
+g_beAlpha       dd 0
+g_beNInUse      dd 0
+g_beCombined    dd 0
+g_beBlockCrc    dd 0
+g_beRunCh       dd 0
+g_beRunLen      dd 0
+g_beBlockPos    dd 0
+g_beCrcReady    dd 0
+.data?
+g_beCrcTab      dd 256 dup(?)
+g_beFreq        dd BE_ALPHA dup(?)
+g_beLen         db BE_ALPHA dup(?)
+g_beCode        dw BE_ALPHA dup(?)
+g_beSeq         db 256 dup(?)
+g_beUsed        db 256 dup(?)
+g_beMtf         db 256 dup(?)
+.code
+
+BeCrcInit PROC
+    .IF g_beCrcReady != 0
+        ret
+    .ENDIF
+    xor ecx, ecx
+    .WHILE ecx < 256
+        mov eax, ecx
+        shl eax, 24
+        mov edx, 8
+        .WHILE edx != 0
+            shl eax, 1
+            .IF CARRY?
+                xor eax, 04C11DB7h
+            .ENDIF
+            dec edx
+        .ENDW
+        mov g_beCrcTab[ecx * 4], eax
+        inc ecx
+    .ENDW
+    mov g_beCrcReady, 1
+    ret
+BeCrcInit ENDP
+
+; One byte into the session's output buffer, flushed to the file when full
+BeOutByte PROC b:DWORD
+    mov ecx, g_dfOut
+    mov edx, g_dfOutPos
+    mov eax, b
+    mov byte ptr [ecx + edx], al
+    inc g_dfOutPos
+    .IF g_dfOutPos >= BE_OUTFLUSH
+        invoke DfWriteRaw, g_dfOut, g_dfOutPos
+        mov g_dfOutPos, 0
+    .ENDIF
+    ret
+BeOutByte ENDP
+
+; nbits (at most 24) of v, most significant first; v carries no higher bits
+BePut PROC v:DWORD, nbits:DWORD
+    mov ecx, nbits
+    mov eax, g_beAcc
+    shl eax, cl
+    or eax, v
+    mov g_beAcc, eax
+    add g_beBits, ecx
+    .WHILE g_beBits >= 8
+        mov ecx, g_beBits
+        sub ecx, 8
+        mov eax, g_beAcc
+        shr eax, cl
+        and eax, 0FFh
+        invoke BeOutByte, eax
+        sub g_beBits, 8
+    .ENDW
+    ret
+BePut ENDP
+
+BePut32 PROC v:DWORD
+    mov eax, v
+    shr eax, 16
+    invoke BePut, eax, 16
+    mov eax, v
+    and eax, 0FFFFh
+    invoke BePut, eax, 16
+    ret
+BePut32 ENDP
+
+; Stable counting sort of the n indices at pIn into pOut by rank[(i + kOfs) mod n]
+BeCountSort PROC USES esi edi ebx pIn:DWORD, pOut:DWORD, kOfs:DWORD
+    LOCAL cntN:DWORD
+    LOCAL j:DWORD
+    mov eax, g_beN
+    .IF eax < 256
+        mov eax, 256
+    .ENDIF
+    inc eax
+    mov cntN, eax
+    mov edi, g_beCnt
+    mov ecx, eax
+    xor eax, eax
+    rep stosd
+    mov esi, pIn
+    mov ebx, g_beRank
+    mov j, 0
+    .WHILE 1
+        mov ecx, j
+        .BREAK .IF ecx >= g_beN
+        mov edx, [esi + ecx * 4]
+        add edx, kOfs
+        .IF edx >= g_beN
+            sub edx, g_beN
+        .ENDIF
+        mov eax, [ebx + edx * 4]
+        mov ecx, g_beCnt
+        inc dword ptr [ecx + eax * 4]
+        inc j
+    .ENDW
+    mov edi, g_beCnt
+    xor eax, eax
+    xor ecx, ecx
+    .WHILE ecx < cntN
+        mov edx, [edi + ecx * 4]
+        mov [edi + ecx * 4], eax
+        add eax, edx
+        inc ecx
+    .ENDW
+    mov edi, pOut
+    mov j, 0
+    .WHILE 1
+        mov ecx, j
+        .BREAK .IF ecx >= g_beN
+        mov edx, [esi + ecx * 4]
+        push edx
+        add edx, kOfs
+        .IF edx >= g_beN
+            sub edx, g_beN
+        .ENDIF
+        mov eax, [ebx + edx * 4]
+        mov ecx, g_beCnt
+        mov edx, [ecx + eax * 4]
+        inc dword ptr [ecx + eax * 4]
+        pop eax
+        mov [edi + edx * 4], eax
+        inc j
+    .ENDW
+    ret
+BeCountSort ENDP
+
+; Sort the block's cyclic rotations into g_beSA; the row holding rotation 0 in eax
+BeBwt PROC USES esi edi ebx
+    LOCAL k:DWORD
+    LOCAL j:DWORD
+    LOCAL r:DWORD
+    LOCAL a:DWORD
+    LOCAL b:DWORD
+    mov esi, g_beBlock
+    mov edi, g_beRank
+    mov ebx, g_beTmp
+    xor ecx, ecx
+    .WHILE ecx < g_beN
+        movzx eax, byte ptr [esi + ecx]
+        mov [edi + ecx * 4], eax
+        mov [ebx + ecx * 4], ecx
+        inc ecx
+    .ENDW
+    invoke BeCountSort, g_beTmp, g_beSA, 0
+    mov k, 1
+    .WHILE 1
+        mov eax, k
+        .BREAK .IF eax >= g_beN
+        invoke BeCountSort, g_beSA, g_beTmp, k
+        invoke BeCountSort, g_beTmp, g_beSA, 0
+        ; ranks of the pairs, in sorted order
+        mov esi, g_beSA
+        mov ebx, g_beRank
+        mov edi, g_beRank2
+        mov r, 0
+        mov eax, [esi]
+        mov dword ptr [edi + eax * 4], 0
+        mov j, 1
+        .WHILE 1
+            mov ecx, j
+            .BREAK .IF ecx >= g_beN
+            mov eax, [esi + ecx * 4 - 4]
+            mov a, eax
+            mov edx, [esi + ecx * 4]
+            mov b, edx
+            mov ecx, [ebx + eax * 4]
+            .IF ecx != [ebx + edx * 4]
+                inc r
+            .ELSE
+                add eax, k
+                .IF eax >= g_beN
+                    sub eax, g_beN
+                .ENDIF
+                add edx, k
+                .IF edx >= g_beN
+                    sub edx, g_beN
+                .ENDIF
+                mov ecx, [ebx + eax * 4]
+                .IF ecx != [ebx + edx * 4]
+                    inc r
+                .ENDIF
+            .ENDIF
+            mov eax, r
+            mov edx, b
+            mov [edi + edx * 4], eax
+            inc j
+        .ENDW
+        mov eax, g_beRank
+        mov ecx, g_beRank2
+        mov g_beRank, ecx
+        mov g_beRank2, eax
+        mov eax, g_beN
+        dec eax
+        .BREAK .IF eax == r
+        shl k, 1
+    .ENDW
+    mov esi, g_beSA
+    xor ecx, ecx
+    .WHILE ecx < g_beN
+        .BREAK .IF dword ptr [esi + ecx * 4] == 0
+        inc ecx
+    .ENDW
+    mov eax, ecx
+    ret
+BeBwt ENDP
+
+; One MTF/RLE2 symbol, counted
+BeSym PROC s:DWORD
+    mov eax, s
+    inc g_beFreq[eax * 4]
+    mov ecx, g_beSyms
+    mov edx, g_beNSyms
+    mov word ptr [ecx + edx * 2], ax
+    inc g_beNSyms
+    ret
+BeSym ENDP
+
+; A zero run as RUNA/RUNB, bijective base two
+BeZeroRun PROC USES ebx run:DWORD
+    mov ebx, run
+    .WHILE ebx != 0
+        dec ebx
+        mov eax, ebx
+        and eax, 1
+        invoke BeSym, eax
+        shr ebx, 1
+    .ENDW
+    ret
+BeZeroRun ENDP
+
+; Last column from the sorted rotations, the used-byte map, MTF and RLE2
+; into g_beSyms with the frequencies
+BeMtf PROC USES esi edi ebx
+    LOCAL j:DWORD
+    LOCAL zrun:DWORD
+    mov edi, offset g_beUsed
+    xor eax, eax
+    mov ecx, 64
+    rep stosd
+    mov esi, g_beSA
+    mov edi, g_beTmp                        ; the last column, as bytes
+    mov ebx, g_beBlock
+    xor ecx, ecx
+    .WHILE ecx < g_beN
+        mov eax, [esi + ecx * 4]
+        .IF eax == 0
+            mov eax, g_beN
+        .ENDIF
+        dec eax
+        mov al, byte ptr [ebx + eax]
+        mov byte ptr [edi + ecx], al
+        movzx eax, al
+        mov g_beUsed[eax], 1
+        inc ecx
+    .ENDW
+    xor ecx, ecx
+    xor edx, edx                            ; symbols in use
+    .WHILE ecx < 256
+        .IF g_beUsed[ecx] != 0
+            mov g_beSeq[ecx], dl
+            mov g_beMtf[edx], dl
+            inc edx
+        .ENDIF
+        inc ecx
+    .ENDW
+    mov g_beNInUse, edx
+    mov edi, offset g_beFreq
+    xor eax, eax
+    mov ecx, BE_ALPHA
+    rep stosd
+    mov g_beNSyms, 0
+    mov zrun, 0
+    mov esi, g_beTmp
+    mov j, 0
+    .WHILE 1
+        mov ecx, j
+        .BREAK .IF ecx >= g_beN
+        movzx eax, byte ptr [esi + ecx]
+        movzx eax, g_beSeq[eax]             ; the value
+        xor ecx, ecx
+        .WHILE g_beMtf[ecx] != al
+            inc ecx
+        .ENDW
+        .IF ecx == 0
+            inc zrun
+        .ELSE
+            .IF zrun != 0
+                push eax
+                push ecx
+                invoke BeZeroRun, zrun
+                mov zrun, 0
+                pop ecx
+                pop eax
+            .ENDIF
+            mov ebx, ecx
+            .WHILE ecx > 0
+                mov dl, g_beMtf[ecx - 1]
+                mov g_beMtf[ecx], dl
+                dec ecx
+            .ENDW
+            mov g_beMtf[0], al
+            lea eax, [ebx + 1]
+            invoke BeSym, eax
+        .ENDIF
+        inc j
+    .ENDW
+    .IF zrun != 0
+        invoke BeZeroRun, zrun
+    .ENDIF
+    mov eax, g_beNInUse
+    inc eax
+    invoke BeSym, eax                       ; end of block
+    mov eax, g_beNInUse
+    add eax, 2
+    mov g_beAlpha, eax
+    ret
+BeMtf ENDP
+
+; Lengths for every symbol (each at least once, as bzip2 wants every symbol
+; coded), then canonical codes by length and symbol
+BeHuffman PROC USES esi edi ebx
+    LOCAL l:DWORD
+    xor ecx, ecx
+    .WHILE ecx < g_beAlpha
+        .IF g_beFreq[ecx * 4] == 0
+            mov g_beFreq[ecx * 4], 1
+        .ENDIF
+        inc ecx
+    .ENDW
+    invoke DfBuildLengths, offset g_beFreq, g_beAlpha, offset g_beLen, BE_MAXLEN
+    xor ebx, ebx                            ; the next code
+    mov l, 1
+    .WHILE l <= BE_MAXLEN
+        xor ecx, ecx
+        .WHILE ecx < g_beAlpha
+            movzx eax, g_beLen[ecx]
+            .IF eax == l
+                mov g_beCode[ecx * 2], bx
+                inc ebx
+            .ENDIF
+            inc ecx
+        .ENDW
+        shl ebx, 1
+        inc l
+    .ENDW
+    ret
+BeHuffman ENDP
+
+; The block: header, used map, two identical tables, the symbols
+BeEmitBlock PROC USES esi edi ebx origPtr:DWORD
+    LOCAL g:DWORD
+    LOCAL i:DWORD
+    LOCAL cur:DWORD
+    LOCAL t:DWORD
+    invoke BePut, 314159h, 24
+    invoke BePut, 265359h, 24
+    invoke BePut32, g_beBlockCrc
+    invoke BePut, 0, 1                      ; not randomised
+    invoke BePut, origPtr, 24
+    mov g, 0
+    .WHILE g < 16
+        mov eax, g
+        shl eax, 4
+        mov ecx, 16
+        xor edx, edx
+        .WHILE ecx != 0
+            or dl, g_beUsed[eax]
+            inc eax
+            dec ecx
+        .ENDW
+        movzx eax, dl
+        invoke BePut, eax, 1
+        inc g
+    .ENDW
+    mov g, 0
+    .WHILE g < 16
+        mov eax, g
+        shl eax, 4
+        mov ecx, 16
+        xor edx, edx
+        .WHILE ecx != 0
+            or dl, g_beUsed[eax]
+            inc eax
+            dec ecx
+        .ENDW
+        .IF dl != 0
+            mov i, 0
+            .WHILE i < 16
+                mov eax, g
+                shl eax, 4
+                add eax, i
+                movzx eax, g_beUsed[eax]
+                invoke BePut, eax, 1
+                inc i
+            .ENDW
+        .ENDIF
+        inc g
+    .ENDW
+    invoke BePut, 2, 3                      ; two tables
+    mov eax, g_beNSyms
+    add eax, 49
+    xor edx, edx
+    mov ecx, 50
+    div ecx
+    mov ebx, eax                            ; selectors, all naming table 0
+    invoke BePut, eax, 15
+    .WHILE ebx != 0
+        invoke BePut, 0, 1
+        dec ebx
+    .ENDW
+    mov t, 0
+    .WHILE t < 2
+        movzx eax, g_beLen[0]
+        mov cur, eax
+        invoke BePut, eax, 5
+        mov i, 0
+        .WHILE 1
+            mov ecx, i
+            .BREAK .IF ecx >= g_beAlpha
+            movzx eax, g_beLen[ecx]
+            .WHILE cur < eax
+                push eax
+                invoke BePut, 2, 2
+                pop eax
+                inc cur
+            .ENDW
+            .WHILE cur > eax
+                push eax
+                invoke BePut, 3, 2
+                pop eax
+                dec cur
+            .ENDW
+            invoke BePut, 0, 1
+            inc i
+        .ENDW
+        inc t
+    .ENDW
+    mov esi, g_beSyms
+    mov i, 0
+    .WHILE 1
+        mov ecx, i
+        .BREAK .IF ecx >= g_beNSyms
+        movzx eax, word ptr [esi + ecx * 2]
+        movzx edx, g_beLen[eax]
+        movzx eax, g_beCode[eax * 2]
+        invoke BePut, eax, edx
+        inc i
+    .ENDW
+    ret
+BeEmitBlock ENDP
+
+; The pending RLE1 run into the block
+BeFlushRun PROC USES edi
+    mov ecx, g_beRunLen
+    .IF ecx == 0
+        ret
+    .ENDIF
+    mov edi, g_beBlock
+    add edi, g_beBlockPos
+    mov eax, g_beRunCh
+    .IF ecx >= 4
+        mov byte ptr [edi], al
+        mov byte ptr [edi + 1], al
+        mov byte ptr [edi + 2], al
+        mov byte ptr [edi + 3], al
+        sub ecx, 4
+        mov byte ptr [edi + 4], cl
+        add g_beBlockPos, 5
+    .ELSE
+        add g_beBlockPos, ecx
+        rep stosb
+    .ENDIF
+    mov g_beRunLen, 0
+    ret
+BeFlushRun ENDP
+
+BeFinishBlock PROC
+    LOCAL origPtr:DWORD
+    invoke BeFlushRun
+    .IF g_beBlockPos == 0
+        ret
+    .ENDIF
+    mov eax, g_beBlockPos
+    mov g_beN, eax
+    not g_beBlockCrc
+    invoke BeBwt
+    mov origPtr, eax
+    invoke BeMtf
+    invoke BeHuffman
+    invoke BeEmitBlock, origPtr
+    mov eax, g_beCombined
+    rol eax, 1
+    xor eax, g_beBlockCrc
+    mov g_beCombined, eax
+    mov g_beBlockPos, 0
+    mov g_beBlockCrc, 0FFFFFFFFh
+    ret
+BeFinishBlock ENDP
+
+; A chunk of input through RLE1 and the block CRC, finishing blocks as they fill
+BeFeed PROC USES esi edi ebx pData:DWORD, cb:DWORD
+    mov esi, pData
+    mov ebx, cb
+    .WHILE ebx != 0 && g_dfErr == 0
+        .IF g_beBlockPos >= BE_BLOCKMAX
+            invoke BeFinishBlock
+        .ENDIF
+        movzx eax, byte ptr [esi]
+        inc esi
+        dec ebx
+        ; the run
+        .IF g_beRunLen == 0
+            mov g_beRunCh, eax
+            mov g_beRunLen, 1
+        .ELSEIF eax == g_beRunCh && g_beRunLen < 255
+            inc g_beRunLen
+        .ELSE
+            push eax
+            invoke BeFlushRun
+            pop eax
+            mov g_beRunCh, eax
+            mov g_beRunLen, 1
+        .ENDIF
+        ; the CRC, over the bytes as given
+        mov ecx, g_beBlockCrc
+        mov edx, ecx
+        shr edx, 24
+        xor edx, eax
+        shl ecx, 8
+        xor ecx, g_beCrcTab[edx * 4]
+        mov g_beBlockCrc, ecx
+    .ENDW
+    ret
+BeFeed ENDP
+
+; 2048-multiple or not, any file: bzip2 stream of one member
+BzCompressFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
+    LOCAL hIn:DWORD
+    LOCAL hOut:DWORD
+    LOCAL off[2]:DWORD
+    LOCAL ok:DWORD
+    mov ok, FALSE
+    invoke BeCrcInit
+    invoke WrBegin, pszSrc, pszDst
+    .IF eax == 0
+        ret
+    .ENDIF
+    mov hIn, eax
+    mov hOut, edx
+    invoke VfsAlloc, BE_BLOCKMAX + 16
+    mov g_beBlock, eax
+    invoke VfsAlloc, (BE_BLOCKMAX + 1) * 4
+    mov g_beSA, eax
+    invoke VfsAlloc, (BE_BLOCKMAX + 1) * 4
+    mov g_beRank, eax
+    invoke VfsAlloc, (BE_BLOCKMAX + 1) * 4
+    mov g_beRank2, eax
+    invoke VfsAlloc, (BE_BLOCKMAX + 1) * 4
+    mov g_beTmp, eax
+    invoke VfsAlloc, (BE_BLOCKMAX + 2) * 4
+    mov g_beCnt, eax
+    invoke VfsAlloc, (BE_BLOCKMAX + 2) * 2
+    mov g_beSyms, eax
+    .IF g_beBlock == 0 || g_beSA == 0 || g_beRank == 0 || g_beRank2 == 0 || g_beTmp == 0 || g_beCnt == 0 || g_beSyms == 0
+        jmp done
+    .ENDIF
+    mov g_beAcc, 0
+    mov g_beBits, 0
+    mov g_beCombined, 0
+    mov g_beBlockCrc, 0FFFFFFFFh
+    mov g_beBlockPos, 0
+    mov g_beRunLen, 0
+    mov g_dfOutPos, 0
+    invoke BeOutByte, 'B'
+    invoke BeOutByte, 'Z'
+    invoke BeOutByte, 'h'
+    invoke BeOutByte, '0' + BE_LEVEL
+    mov off[0], 0
+    mov off[4], 0
+    .WHILE g_dfErr == 0
+        invoke WrReadBlock, hIn, addr off, 1024 * 1024
+        .BREAK .IF eax == 0
+        invoke BeFeed, g_dfChunkPtr, eax
+    .ENDW
+    .IF g_dfErr != 0
+        jmp done
+    .ENDIF
+    invoke BeFinishBlock
+    invoke BePut, 177245h, 24
+    invoke BePut, 385090h, 24
+    invoke BePut32, g_beCombined
+    .IF g_beBits != 0
+        mov eax, 8
+        sub eax, g_beBits
+        invoke BePut, 0, eax
+    .ENDIF
+    invoke DfWriteRaw, g_dfOut, g_dfOutPos
+    mov g_dfOutPos, 0
+    .IF g_dfErr == 0
+        mov ok, TRUE
+    .ENDIF
+done:
+    invoke VfsFreeMem, g_beBlock
+    invoke VfsFreeMem, g_beSA
+    invoke VfsFreeMem, g_beRank
+    invoke VfsFreeMem, g_beRank2
+    invoke VfsFreeMem, g_beTmp
+    invoke VfsFreeMem, g_beCnt
+    invoke VfsFreeMem, g_beSyms
+    invoke WrEnd, ok, hIn, hOut, pszDst
+    ret
+BzCompressFile ENDP
+
 END

@@ -46,14 +46,15 @@ WSTR szEcmSuffix, <.ecm>
 WSTR szNrgSuffix, <.nrg>
 WSTR szZsoSuffix, <.zso>
 WSTR szChdSuffix, <.chd>
+WSTR szBz2Suffix, <.bz2>
 WSTR szRawSuffix, <.raw>
 ; indexed by SAVE_* - 1: the suffix the second pass writes beside the image, and its writer
 g_saveSuffix    dd offset szGzSuffix, offset szZipSuffix, offset szCsoSuffix, offset szIszSuffix, offset szDaxSuffix
                 dd offset szJsoSuffix, offset szGczSuffix, offset szUifSuffix, offset szDaaSuffix, offset szDmgSuffix
-                dd offset szEcmSuffix, offset szNrgSuffix, offset szZsoSuffix, offset szChdSuffix, offset szRawSuffix
+                dd offset szEcmSuffix, offset szNrgSuffix, offset szZsoSuffix, offset szChdSuffix, offset szBz2Suffix, offset szRawSuffix
 g_saveWriter    dd offset GzCompressFile, 0, offset CsoCompressFile, offset IszCompressFile, offset DaxCompressFile
                 dd offset JsoCompressFile, offset GczCompressFile, offset UifCompressFile, offset DaaCompressFile, offset DmgCompressFile
-                dd offset EcmWrapFile, offset NrgWrapFile, offset ZsoCompressFile, offset ChdWriteFile, offset RawWrapFile
+                dd offset EcmWrapFile, offset NrgWrapFile, offset ZsoCompressFile, offset ChdWriteFile, offset BzCompressFile, offset RawWrapFile
 WSTR szIsoDot, <.iso>
 szPctFmt        dw '%','s','.','.','.',' ',' ','%','u','%','%',0
 szDotsFmt       dw '%','s','.','.','.',0
