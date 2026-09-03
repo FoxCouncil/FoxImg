@@ -60,7 +60,7 @@ The convert returns exit code 0 on success and prints one line to the console it
 | DAX | .dax | Yes | Yes | PSP: zlib frames and raw NC areas; writes 8 KB zlib frames |
 | JSO | .jso | Yes | Yes | PSP: reads deflate and LZO methods; writes deflate, 2 KB blocks |
 | PBP | .pbp | Yes | No | PS1 Classics EBOOT (PSISOIMG); multi-disc takes disc 1; encrypted PSP UMD declined |
-| CHD | .chd | Yes | Yes | Reads v5: zlib, LZMA, FLAC, all CD codecs, stored and self hunks; parented CHDs declined. Writes v5 raw (uncompressed hunks, SHA-1 filled) |
+| CHD | .chd | Yes | Yes | Reads v5: zlib, LZMA, FLAC, all CD codecs, stored and self hunks; parented CHDs declined. Writes v5 with zlib hunks, the compressed map and both SHA-1s; chdman reads it |
 | GCZ | .gcz | Yes | Yes | Dolphin: zlib and stored blocks with the Adler-32 block hashes Dolphin checks |
 | RVZ | .rvz | Yes | No | Dolphin, GameCube discs: Zstandard groups and packed junk; Wii (encrypted partitions) and WIA declined |
 | WBFS | .wbfs | Planned | No | Wii backup file system |

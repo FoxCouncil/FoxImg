@@ -1640,16 +1640,30 @@ Lz4Compress PROC USES esi edi ebx pSrc:DWORD, cb:DWORD, pDst:DWORD
 Lz4Compress ENDP
 
 ; ---------------------------------------------------------------------------
-; CHD v5 (MAME), uncompressed: the 124-byte big-endian header, a map of one
-; dword per hunk giving its position in hunk units, then the hunks, the last
-; one padded. No metadata, so the combined SHA-1 is the SHA-1 of the raw
-; SHA-1 alone. Hashing is the OS's (bcrypt).
+; CHD v5 (MAME) with zlib hunks: the 124-byte big-endian header, the hunks
+; from byte 124 (each raw deflate when that is shorter, else stored), then
+; the map as chdman writes it - a 16-byte map header and a bitstream of the
+; hunk types under a Huffman code with run-length escapes, then per hunk the
+; compressed length and a CRC-16 of the hunk's plain bytes. No metadata, so
+; the combined SHA-1 is the SHA-1 of the raw SHA-1. Hashing is bcrypt's.
+; The bit writer is the bzip2 encoder's.
 ; ---------------------------------------------------------------------------
 CHD_WR_HUNK     equ 32768               ; 16 sectors
 CHD_WR_HDR      equ 124
+CHD_RLE_SMALL   equ 7
+BePut           PROTO :DWORD,:DWORD     ; the bzip2 encoder's bit writer, further down
 
 .data
 szBcSha1        dw 'S','H','A','1',0
+g_chdCrcReady   dd 0
+g_chdRaw        dd 0                    ; the raw map, 12 bytes per hunk
+g_chdSym        dd 0                    ; the type stream after RLE, one byte per symbol
+g_chdNSym       dd 0
+.data?
+g_chdCrcTab     dw 256 dup(?)
+g_chdFreq       dd 16 dup(?)
+g_chdLen        db 16 dup(?)
+g_chdCode       dw 16 dup(?)
 .code
 
 ChdBE32 PROC pDst:DWORD, v:DWORD
@@ -1660,6 +1674,232 @@ ChdBE32 PROC pDst:DWORD, v:DWORD
     ret
 ChdBE32 ENDP
 
+; CRC-16 with polynomial 1021h, seeded FFFFh, as MAME's crc16_creator
+ChdCrcInit PROC
+    .IF g_chdCrcReady != 0
+        ret
+    .ENDIF
+    xor ecx, ecx
+    .WHILE ecx < 256
+        mov eax, ecx
+        shl eax, 8
+        mov edx, 8
+        .WHILE edx != 0
+            shl eax, 1
+            .IF eax & 10000h
+                xor eax, 11021h             ; the polynomial, and the bit shifted out
+            .ENDIF
+            dec edx
+        .ENDW
+        mov g_chdCrcTab[ecx * 2], ax
+        inc ecx
+    .ENDW
+    mov g_chdCrcReady, 1
+    ret
+ChdCrcInit ENDP
+
+ChdCrc16 PROC USES esi pData:DWORD, cb:DWORD
+    mov esi, pData
+    mov ecx, cb
+    mov eax, 0FFFFh
+    .WHILE ecx != 0
+        movzx edx, byte ptr [esi]
+        xor dl, ah
+        shl eax, 8
+        movzx edx, dl
+        xor ax, g_chdCrcTab[edx * 2]
+        inc esi
+        dec ecx
+    .ENDW
+    and eax, 0FFFFh
+    ret
+ChdCrc16 ENDP
+
+; Bits to hold v (0 for 0), as MAME's bits_for_value
+ChdBitsFor PROC v:DWORD
+    mov ecx, v
+    xor eax, eax
+    .WHILE ecx != 0
+        shr ecx, 1
+        inc eax
+    .ENDW
+    ret
+ChdBitsFor ENDP
+
+; One map symbol into the type stream, counted
+ChdSym PROC s:DWORD
+    mov eax, s
+    inc g_chdFreq[eax * 4]
+    mov ecx, g_chdSym
+    mov edx, g_chdNSym
+    mov byte ptr [ecx + edx], al
+    inc g_chdNSym
+    ret
+ChdSym ENDP
+
+; The type stream: a type, then runs as RLE_SMALL covering 3 to 18 hunks
+ChdTypeStream PROC USES esi ebx nHunk:DWORD
+    LOCAL i:DWORD
+    LOCAL run:DWORD
+    mov g_chdNSym, 0
+    xor eax, eax
+    mov ecx, 16
+    mov esi, offset g_chdFreq
+    .WHILE ecx != 0
+        mov dword ptr [esi], eax
+        add esi, 4
+        dec ecx
+    .ENDW
+    mov esi, g_chdRaw
+    mov i, 0
+    .WHILE 1
+        mov eax, i
+        .BREAK .IF eax >= nHunk
+        mov ecx, eax
+        lea ecx, [ecx + ecx * 2]
+        shl ecx, 2
+        movzx ebx, byte ptr [esi + ecx]     ; this type
+        invoke ChdSym, ebx
+        ; the run that follows
+        mov run, 0
+        .WHILE 1
+            mov eax, i
+            add eax, run
+            inc eax
+            .BREAK .IF eax >= nHunk
+            mov ecx, eax
+            lea ecx, [ecx + ecx * 2]
+            shl ecx, 2
+            movzx eax, byte ptr [esi + ecx]
+            .BREAK .IF eax != ebx
+            inc run
+        .ENDW
+        mov eax, i
+        add eax, run
+        inc eax
+        mov i, eax
+        ; RLE_SMALL with nibble k covers 3 + k hunks (the one it lands on and 2 + k more)
+        .WHILE run != 0
+            .IF run < 3
+                invoke ChdSym, ebx
+                dec run
+            .ELSE
+                mov eax, run
+                .IF eax > 18
+                    mov eax, 18
+                .ENDIF
+                sub run, eax
+                push eax
+                invoke ChdSym, CHD_RLE_SMALL
+                pop eax
+                sub eax, 3
+                invoke ChdSym, eax
+            .ENDIF
+        .ENDW
+    .ENDW
+    ret
+ChdTypeStream ENDP
+
+; Lengths (at most 8 bits) and MAME's canonical codes, longest first
+ChdHuffman PROC USES ebx
+    LOCAL histo[33]:DWORD
+    LOCAL curstart:DWORD
+    invoke DfBuildLengths, offset g_chdFreq, 16, offset g_chdLen, 8
+    ; a lone symbol still needs one bit, or the decoder has nothing to read
+    xor ecx, ecx
+    xor edx, edx                            ; symbols in use
+    mov ebx, -1
+    .WHILE ecx < 16
+        .IF g_chdFreq[ecx * 4] != 0
+            inc edx
+            mov ebx, ecx
+        .ENDIF
+        inc ecx
+    .ENDW
+    .IF edx == 1
+        mov g_chdLen[ebx], 1
+    .ENDIF
+    xor eax, eax
+    xor ecx, ecx
+    .WHILE ecx < 33
+        mov dword ptr histo[ecx * 4], eax
+        inc ecx
+    .ENDW
+    xor ecx, ecx
+    .WHILE ecx < 16
+        movzx eax, g_chdLen[ecx]
+        .IF eax != 0
+            inc dword ptr histo[eax * 4]
+        .ENDIF
+        inc ecx
+    .ENDW
+    mov curstart, 0
+    mov ebx, 32
+    .WHILE ebx > 0
+        mov eax, curstart
+        add eax, dword ptr histo[ebx * 4]
+        shr eax, 1
+        mov ecx, curstart
+        mov dword ptr histo[ebx * 4], ecx
+        mov curstart, eax
+        dec ebx
+    .ENDW
+    xor ecx, ecx
+    .WHILE ecx < 16
+        movzx eax, g_chdLen[ecx]
+        mov word ptr g_chdCode[ecx * 2], 0
+        .IF eax != 0
+            mov edx, dword ptr histo[eax * 4]
+            mov word ptr g_chdCode[ecx * 2], dx
+            inc dword ptr histo[eax * 4]
+        .ENDIF
+        inc ecx
+    .ENDW
+    ret
+ChdHuffman ENDP
+
+; The tree as MAME's export_tree_rle for 16 codes of at most 8 bits: 4-bit
+; lengths, 1 escapes a run of three or more (1, length, count - 3) and 1, 1
+; is a length of one
+ChdTreeExport PROC USES ebx
+    LOCAL i:DWORD
+    mov i, 0
+    .WHILE i < 16
+        mov ecx, i
+        movzx ebx, g_chdLen[ecx]
+        xor edx, edx                        ; run length
+        .WHILE ecx < 16
+            movzx eax, g_chdLen[ecx]
+            .BREAK .IF eax != ebx
+            inc edx
+            inc ecx
+        .ENDW
+        .IF edx >= 3 && ebx != 1
+            .IF edx > 18
+                mov edx, 18
+            .ENDIF
+            push edx
+            invoke BePut, 1, 4
+            invoke BePut, ebx, 4
+            pop edx
+            push edx
+            sub edx, 3
+            invoke BePut, edx, 4
+            pop edx
+            add i, edx
+        .ELSE
+            .IF ebx == 1
+                invoke BePut, 1, 4
+                invoke BePut, 1, 4
+            .ELSE
+                invoke BePut, ebx, 4
+            .ENDIF
+            inc i
+        .ENDIF
+    .ENDW
+    ret
+ChdTreeExport ENDP
+
 ChdWriteFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
     LOCAL hIn:DWORD
     LOCAL hOut:DWORD
@@ -1668,16 +1908,25 @@ ChdWriteFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
     LOCAL hHash:DWORD
     LOCAL off[2]:DWORD
     LOCAL nHunk:DWORD
-    LOCAL mapCb:DWORD
-    LOCAL dataStart:DWORD                   ; in hunk units
-    LOCAL padCb:DWORD
     LOCAL i:DWORD
     LOCAL n:DWORD
+    LOCAL clen:DWORD
+    LOCAL maxLen:DWORD
+    LOCAL lenBits:DWORD
+    LOCAL selfBits:DWORD
+    LOCAL posLo:DWORD                       ; running file position
+    LOCAL posHi:DWORD
+    LOCAL mapLo:DWORD
+    LOCAL mapHi:DWORD
+    LOCAL mapCrc:DWORD
     LOCAL hdr[CHD_WR_HDR]:BYTE
     LOCAL rawSha[20]:BYTE
     mov ok, FALSE
     mov hAlg, 0
     mov hHash, 0
+    mov g_chdRaw, 0
+    mov g_chdSym, 0
+    invoke ChdCrcInit
     invoke WrBegin, pszSrc, pszDst
     .IF eax == 0
         ret
@@ -1687,7 +1936,6 @@ ChdWriteFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
     .IF g_dfSizeLo == 0 && g_dfSizeHi == 0
         jmp done
     .ENDIF
-    ; hunks = ceil(size / hunk); the map after the header; data on the first hunk boundary past it
     mov eax, g_dfSizeLo
     mov edx, g_dfSizeHi
     add eax, CHD_WR_HUNK - 1
@@ -1695,18 +1943,21 @@ ChdWriteFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
     shrd eax, edx, 15
     shr edx, 15
     .IF edx != 0 || eax > 100000h
-        jmp done                            ; 4 GB of hunks is plenty for a disc
+        jmp done
     .ENDIF
     mov nHunk, eax
+    lea eax, [eax + eax * 2]
     shl eax, 2
-    mov mapCb, eax
-    add eax, CHD_WR_HDR + CHD_WR_HUNK - 1
-    shr eax, 15
-    mov dataStart, eax
-    shl eax, 15
-    sub eax, mapCb
-    sub eax, CHD_WR_HDR
-    mov padCb, eax
+    invoke VfsAlloc, eax
+    mov g_chdRaw, eax
+    mov eax, nHunk
+    shl eax, 1
+    add eax, 16
+    invoke VfsAlloc, eax                    ; at most two symbols per hunk
+    mov g_chdSym, eax
+    .IF g_chdRaw == 0 || g_chdSym == 0
+        jmp done
+    .ENDIF
     invoke BCryptOpenAlgorithmProvider, addr hAlg, offset szBcSha1, NULL, 0
     .IF eax != 0
         jmp done
@@ -1715,78 +1966,173 @@ ChdWriteFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
     .IF eax != 0
         jmp done
     .ENDIF
-    ; header placeholder, the map, the padding
+    ; header placeholder; the hunks follow it directly
     lea edi, hdr
     xor eax, eax
     mov ecx, CHD_WR_HDR / 4
     rep stosd
     invoke DfWriteRaw, addr hdr, CHD_WR_HDR
+    mov posLo, CHD_WR_HDR
+    mov posHi, 0
+    mov maxLen, 0
+    mov off[0], 0
+    mov off[4], 0
     mov i, 0
     .WHILE g_dfErr == 0
         mov eax, i
         .BREAK .IF eax >= nHunk
-        ; a run of map entries through the output buffer: dataStart + i, big-endian
-        mov edi, g_dfOut
-        mov n, 0
-        .WHILE 1
-            mov eax, i
-            .BREAK .IF eax >= nHunk
-            .BREAK .IF n >= 65536
-            add eax, dataStart
-            bswap eax
-            mov dword ptr [edi], eax
-            add edi, 4
-            inc i
-            inc n
-        .ENDW
-        mov eax, n
-        shl eax, 2
-        invoke DfWriteRaw, g_dfOut, eax
-    .ENDW
-    mov eax, padCb
-    .IF eax != 0
-        mov edi, g_dfOut
-        mov ecx, eax
-        xor eax, eax
-        rep stosb
-        invoke DfWriteRaw, g_dfOut, padCb
-    .ENDIF
-    ; the hunks, hashed as they go
-    mov off[0], 0
-    mov off[4], 0
-    .WHILE g_dfErr == 0
-        invoke WrReadBlock, hIn, addr off, CHD_WR_HUNK * 16
-        .BREAK .IF eax == 0
+        invoke WrReadBlock, hIn, addr off, CHD_WR_HUNK
+        .IF eax == 0
+            mov g_dfErr, 1
+            .BREAK
+        .ENDIF
         mov n, eax
         invoke BCryptHashData, hHash, g_dfChunkPtr, n, 0
         .IF eax != 0
             mov g_dfErr, 1
             .BREAK
         .ENDIF
-        ; pad a short tail to whole hunks
-        mov eax, n
-        add eax, CHD_WR_HUNK - 1
-        and eax, -CHD_WR_HUNK
-        mov ecx, eax
-        sub ecx, n
-        .IF ecx != 0
+        .IF n < CHD_WR_HUNK
             mov edi, g_dfChunkPtr
             add edi, n
-            push eax
+            mov ecx, CHD_WR_HUNK
+            sub ecx, n
             xor eax, eax
             rep stosb
-            pop eax
         .ENDIF
-        invoke DfWriteRaw, g_dfChunkPtr, eax
+        ; the raw map entry: type, length, offset, CRC of the plain hunk
+        mov esi, g_chdRaw
+        mov ecx, i
+        lea ecx, [ecx + ecx * 2]
+        shl ecx, 2
+        add esi, ecx
+        invoke ChdCrc16, g_dfChunkPtr, CHD_WR_HUNK
+        mov byte ptr [esi + 10], ah
+        mov byte ptr [esi + 11], al
+        mov eax, posHi
+        mov byte ptr [esi + 4], ah
+        mov byte ptr [esi + 5], al
+        mov eax, posLo
+        bswap eax
+        mov dword ptr [esi + 6], eax
+        invoke DfBlockDeflate, CHD_WR_HUNK, 0
+        mov clen, eax
+        .IF eax < CHD_WR_HUNK
+            mov byte ptr [esi], 0           ; zlib
+            .IF eax > maxLen
+                mov maxLen, eax
+            .ENDIF
+            invoke DfWriteRaw, g_dfOut, clen
+        .ELSE
+            mov byte ptr [esi], 4           ; stored
+            mov clen, CHD_WR_HUNK
+            invoke DfWriteRaw, g_dfChunkPtr, CHD_WR_HUNK
+        .ENDIF
+        mov eax, clen
+        mov byte ptr [esi + 1], 0
+        mov byte ptr [esi + 2], ah
+        mov byte ptr [esi + 3], al
+        .IF eax >= 10000h
+            mov ecx, eax
+            shr ecx, 16
+            mov byte ptr [esi + 1], cl
+        .ENDIF
+        add posLo, eax
+        adc posHi, 0
+        inc i
     .ENDW
     .IF g_dfErr != 0
         jmp done
     .ENDIF
+    mov g_dfOutPos, 0
+    ; the map: header, tree, types, then lengths and CRCs
+    mov eax, posLo
+    mov mapLo, eax
+    mov eax, posHi
+    mov mapHi, eax
+    mov eax, nHunk
+    lea eax, [eax + eax * 2]
+    shl eax, 2
+    invoke ChdCrc16, g_chdRaw, eax
+    mov mapCrc, eax
+    invoke ChdBitsFor, maxLen
+    mov lenBits, eax
+    invoke ChdBitsFor, nHunk
+    mov selfBits, eax
+    invoke ChdTypeStream, nHunk
+    invoke ChdHuffman
+    mov g_beAcc, 0
+    mov g_beBits, 0
+    invoke DfWriteRaw, addr hdr, 16         ; map header placeholder (hdr is still zero)
+    invoke ChdTreeExport
+    mov esi, g_chdSym
+    mov i, 0
+    .WHILE 1
+        mov ecx, i
+        .BREAK .IF ecx >= g_chdNSym
+        movzx eax, byte ptr [esi + ecx]
+        movzx edx, g_chdLen[eax]
+        movzx eax, g_chdCode[eax * 2]
+        invoke BePut, eax, edx
+        inc i
+    .ENDW
+    mov esi, g_chdRaw
+    mov i, 0
+    .WHILE 1
+        mov eax, i
+        .BREAK .IF eax >= nHunk
+        mov ecx, eax
+        lea ecx, [ecx + ecx * 2]
+        shl ecx, 2
+        .IF byte ptr [esi + ecx] == 0
+            movzx eax, byte ptr [esi + ecx + 1]
+            shl eax, 8
+            mov al, byte ptr [esi + ecx + 2]
+            shl eax, 8
+            mov al, byte ptr [esi + ecx + 3]
+            invoke BePut, eax, lenBits
+        .ENDIF
+        mov ecx, i
+        lea ecx, [ecx + ecx * 2]
+        shl ecx, 2
+        movzx eax, byte ptr [esi + ecx + 10]
+        shl eax, 8
+        mov al, byte ptr [esi + ecx + 11]
+        invoke BePut, eax, 16
+        inc i
+    .ENDW
+    .IF g_beBits != 0
+        mov eax, 8
+        sub eax, g_beBits
+        invoke BePut, 0, eax
+    .ENDIF
+    invoke DfWriteRaw, g_dfOut, g_dfOutPos
+    mov eax, g_dfOutPos                     ; bytes of map bitstream (all of it sat in the buffer)
+    mov n, eax
+    mov g_dfOutPos, 0
+    ; map header: length, first hunk offset (48 bits), map CRC, bit widths
+    lea edi, hdr
+    invoke ChdBE32, edi, n
+    mov byte ptr [edi + 4], 0
+    mov byte ptr [edi + 5], 0
+    lea eax, [edi + 6]
+    invoke ChdBE32, eax, CHD_WR_HDR
+    mov eax, mapCrc
+    mov byte ptr [edi + 10], ah
+    mov byte ptr [edi + 11], al
+    mov eax, lenBits
+    mov byte ptr [edi + 12], al
+    mov eax, selfBits
+    mov byte ptr [edi + 13], al
+    mov byte ptr [edi + 14], 0
+    mov byte ptr [edi + 15], 0
+    invoke SetFilePointerEx, hOut, mapLo, mapHi, NULL, FILE_BEGIN
+    invoke DfWriteRaw, addr hdr, 16
+    ; hashes
     invoke BCryptFinishHash, hHash, addr rawSha, 20, 0
     .IF eax != 0
         jmp done
     .ENDIF
-    ; combined SHA-1 over the raw SHA-1 (no metadata hashes)
     invoke BCryptDestroyHash, hHash
     mov hHash, 0
     invoke BCryptCreateHash, hAlg, addr hHash, NULL, 0, NULL, 0, 0
@@ -1794,13 +2140,17 @@ ChdWriteFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
         jmp done
     .ENDIF
     invoke BCryptHashData, hHash, addr rawSha, 20, 0
+    lea edi, hdr
+    xor eax, eax
+    mov ecx, CHD_WR_HDR / 4
+    rep stosd
     lea eax, hdr
     add eax, 84
     invoke BCryptFinishHash, hHash, eax, 20, 0
     .IF eax != 0
         jmp done
     .ENDIF
-    ; the header: magic, length, version 5, no compressors, sizes, offsets, hashes
+    ; the header: magic, length, version 5, zlib, sizes, offsets, hashes
     lea edi, hdr
     mov esi, offset szChdMagic
     mov ecx, 8
@@ -1810,14 +2160,15 @@ ChdWriteFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
     invoke ChdBE32, eax, CHD_WR_HDR
     lea eax, [edi + 12]
     invoke ChdBE32, eax, 5
+    mov dword ptr [edi + 16], 'bilz'        ; "zlib"
     lea eax, [edi + 32]
     invoke ChdBE32, eax, g_dfSizeHi         ; logical bytes
     lea eax, [edi + 36]
     invoke ChdBE32, eax, g_dfSizeLo
     lea eax, [edi + 40]
-    invoke ChdBE32, eax, 0                  ; map offset
+    invoke ChdBE32, eax, mapHi              ; map offset
     lea eax, [edi + 44]
-    invoke ChdBE32, eax, CHD_WR_HDR
+    invoke ChdBE32, eax, mapLo
     lea eax, [edi + 56]
     invoke ChdBE32, eax, CHD_WR_HUNK        ; hunk and unit bytes
     lea eax, [edi + 60]
@@ -1839,6 +2190,8 @@ done:
     .IF hAlg != 0
         invoke BCryptCloseAlgorithmProvider, hAlg, 0
     .ENDIF
+    invoke VfsFreeMem, g_chdRaw
+    invoke VfsFreeMem, g_chdSym
     invoke WrEnd, ok, hIn, hOut, pszDst
     ret
 ChdWriteFile ENDP

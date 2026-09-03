@@ -1179,7 +1179,7 @@ GzCompressFile      PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL; worker 
 ZipCompressFile     PROTO :DWORD,:DWORD,:DWORD  ; pszSrc, pszDst, pszEntry (UTF-16) -> BOOL, one deflated entry, zip64 past 4 GB
 CsoCompressFile     PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, CSO v1 with 2 KB deflate blocks
 ZsoCompressFile     PROTO :DWORD,:DWORD        ; the same with LZ4 blocks (ZISO)
-ChdWriteFile        PROTO :DWORD,:DWORD        ; CHD v5, uncompressed hunks, SHA-1 filled
+ChdWriteFile        PROTO :DWORD,:DWORD        ; CHD v5, zlib hunks, compressed map, SHA-1 filled
 BzCompressFile      PROTO :DWORD,:DWORD        ; any file -> .bz2
 DfBuildLengths      PROTO :DWORD,:DWORD,:DWORD,:DWORD ; pFreq (dwords), n, pLen (bytes), maxBits
 Lz4Compress         PROTO :DWORD,:DWORD,:DWORD ; pSrc, cb, pDst -> length
