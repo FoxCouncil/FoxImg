@@ -13,7 +13,7 @@ The program is one small executable with no runtime dependencies.
 - Browse an image as a folder tree with a file list, preview pane, and status bar.
 - Add, rename, move, and delete files and folders inside an image.
 - Drag and drop in both directions: from Explorer into the image, and from the image to Explorer.
-- Save or convert any open image to ISO 9660 + Joliet + UDF 1.02, to BIN/CUE, to a gzip- or zip-compressed ISO, or to CSO, ISZ, DAX, JSO, GCZ, UIF, DAA or DMG.
+- Save or convert any open image to ISO 9660 + Joliet + UDF 1.02, to BIN/CUE (2048 or raw), to cdrdao TOC, CloneCD or ECM with the sector EDC and ECC generated, to a gzip- or zip-compressed ISO, or to CSO, ISZ, DAX, JSO, GCZ, UIF, DAA or DMG.
 - Keep El Torito boot records through a save. BIOS and UEFI entries survive, and
   isolinux/GRUB boot info tables are patched for the new layout.
 - Open images of any size. A sliding 64 MB mapping window keeps memory use flat.
@@ -44,11 +44,11 @@ The convert returns exit code 0 on success and prints one line to the console it
 | Nero | .nrg | Yes | No | v1 and v2, DAO and TAO chunk lists |
 | Alcohol 120% | .mds .mdf | Yes | No | First data track of the first session |
 | Alcohol MDX | .mdx | Yes | No | Single-file v2 descriptor; encrypted and compressed declined |
-| CloneCD | .ccd .img | Yes | No | Raw image beside the sheet |
+| CloneCD | .ccd .img | Yes | Yes | Raw image beside the sheet; writes one MODE1 track with its TOC entries |
 | DiscJuggler | .cdi | Yes | No | Found by signature scan |
 | Dreamcast | .gdi | Yes | No | Data track with its 45000 block base |
-| cdrdao | .toc | Yes | No | DATAFILE with track mode |
-| ECM | .ecm | Yes | No | Decoded once to a temporary raw image |
+| cdrdao | .toc | Yes | Yes | DATAFILE with track mode; writes MODE1_RAW |
+| ECM | .ecm | Yes | Yes | Decoded once to a temporary raw image with the parity restored; writes MODE1 records |
 | Xbox / Xbox 360 | .iso (XDVDFS) | Yes | No | XISO and all redump partition offsets |
 | 3DO | .iso .cue (Opera) | Yes | No | Volume label, directory chains, copies |
 | CD-i | .iso .bin | Yes | No | Green Book descriptors beside CD001 |
@@ -100,7 +100,7 @@ chunk by chunk - an ISZ may hold zlib and bzip2 blocks in one image.
 | LZ4 | Yes | ZSO, CISO v2 |
 | FLAC | Yes | CHD cdfl and flac hunks (16-bit stereo) |
 | LZO1X | Yes | JSO method 0 |
-| CD-ROM EDC/ECC (generate) | Yes | Save As raw BIN/CUE: ECMA-130 EDC and P/Q parity for every MODE1 sector |
+| CD-ROM EDC/ECC (generate) | Yes | Raw BIN/CUE, TOC, CCD and ECM writers; the ECM and CHD readers restore the parity those formats strip |
 
 ## Download
 

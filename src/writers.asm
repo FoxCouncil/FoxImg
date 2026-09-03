@@ -1093,11 +1093,11 @@ RawInitTables PROC
     ret
 RawInitTables ENDP
 
-; EDC of cb bytes at pData
-RawEdc PROC USES esi pData:DWORD, cb:DWORD
+; EDC of cb bytes at pData, continued from seed (0 to start)
+RawEdc PROC USES esi seed:DWORD, pData:DWORD, cb:DWORD
     mov esi, pData
     mov ecx, cb
-    xor eax, eax
+    mov eax, seed
     .WHILE ecx != 0
         movzx edx, byte ptr [esi]
         xor dl, al
@@ -1197,20 +1197,29 @@ RawBuildSector PROC USES esi edi pDst:DWORD, pSrc:DWORD, lba:DWORD
     add edi, 16
     mov ecx, 512
     rep movsd
-    mov edi, pDst
-    invoke RawEdc, edi, 2064
+    invoke RawFixMode1, pDst
+    ret
+RawBuildSector ENDP
+
+; Recompute the EDC and parity of a MODE1 sector in place; sync, header and
+; data are already there. Also what the ECM and CHD readers call to put back
+; what those formats strip.
+RawFixMode1 PROC USES edi pSector:DWORD
+    invoke RawInitTables
+    mov edi, pSector
+    invoke RawEdc, 0, edi, 2064
     mov dword ptr [edi + 2064], eax
     mov dword ptr [edi + 2068], 0
     mov dword ptr [edi + 2072], 0
     lea eax, [edi + 12]
     lea ecx, [edi + 2076]
     invoke RawEcc, eax, 86, 24, 2, 86, ecx  ; P
-    mov edi, pDst
+    mov edi, pSector
     lea eax, [edi + 12]
     lea ecx, [edi + 2248]
     invoke RawEcc, eax, 52, 43, 86, 88, ecx ; Q
     ret
-RawBuildSector ENDP
+RawFixMode1 ENDP
 
 ; Rewrite a 2048-byte-sector image as MODE1/2352 raw sectors
 RawWrapFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
@@ -1264,5 +1273,129 @@ done:
     invoke WrEnd, ok, hIn, hOut, pszDst
     ret
 RawWrapFile ENDP
+
+; ---------------------------------------------------------------------------
+; ECM (Error Code Modeler): "ECM\0", then records with a varint head (type in
+; the low two bits, count - 1 above, bit 7 continues); a MODE1 record holds
+; the 3 address bytes and the 2048 data bytes per sector. One record covers
+; the image. Then the end marker and the EDC of the whole raw reconstruction,
+; which is why each sector is built in full first.
+; ---------------------------------------------------------------------------
+ECM_SCRATCH     equ 614400              ; a full sector's scratch inside g_dfOut, past the 256 records
+
+EcmWrapFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
+    LOCAL hIn:DWORD
+    LOCAL hOut:DWORD
+    LOCAL off[2]:DWORD
+    LOCAL lba:DWORD
+    LOCAL n:DWORD
+    LOCAL i:DWORD
+    LOCAL edc:DWORD
+    LOCAL ok:DWORD
+    LOCAL hdr[16]:BYTE
+    mov ok, FALSE
+    invoke RawInitTables
+    invoke WrBegin, pszSrc, pszDst
+    .IF eax == 0
+        ret
+    .ENDIF
+    mov hIn, eax
+    mov hOut, edx
+    mov eax, g_dfSizeLo
+    test eax, 2047
+    jnz done
+    .IF g_dfSizeHi != 0 || eax == 0
+        jmp done
+    .ENDIF
+    ; header and the head of one MODE1 record for every sector
+    lea edi, hdr
+    mov dword ptr [edi], 004D4345h          ; "ECM\0"
+    mov eax, g_dfSizeLo
+    shr eax, 11
+    dec eax                                 ; the count is stored less one
+    mov ecx, eax
+    and ecx, 1Fh
+    shl ecx, 2
+    or ecx, 1                               ; type 1: MODE1
+    .IF eax >= 20h
+        or ecx, 80h
+    .ENDIF
+    mov byte ptr [edi + 4], cl
+    mov n, 5
+    shr eax, 5
+    .WHILE eax != 0
+        mov ecx, eax
+        and ecx, 7Fh
+        .IF eax >= 80h
+            or ecx, 80h
+        .ENDIF
+        mov edx, n
+        mov byte ptr [edi + edx], cl
+        inc n
+        shr eax, 7
+    .ENDW
+    invoke DfWriteRaw, addr hdr, n
+    mov edc, 0
+    mov lba, 0
+    mov off[0], 0
+    mov off[4], 0
+    .WHILE g_dfErr == 0
+        invoke WrReadBlock, hIn, addr off, RAW_BATCH * 2048
+        .BREAK .IF eax == 0
+        shr eax, 11
+        mov n, eax
+        mov i, 0
+        .WHILE 1
+            mov eax, i
+            .BREAK .IF eax >= n
+            ; the full sector, for the running EDC
+            mov eax, g_dfOut
+            add eax, ECM_SCRATCH
+            mov ecx, i
+            shl ecx, 11
+            add ecx, g_dfChunkPtr
+            invoke RawBuildSector, eax, ecx, lba
+            mov esi, g_dfOut
+            add esi, ECM_SCRATCH
+            invoke RawEdc, edc, esi, 2352
+            mov edc, eax
+            ; the record body: address then data
+            mov edi, i
+            imul edi, 2051
+            add edi, g_dfOut
+            mov esi, g_dfOut
+            add esi, ECM_SCRATCH
+            mov eax, dword ptr [esi + 12]
+            mov byte ptr [edi], al
+            shr eax, 8
+            mov byte ptr [edi + 1], al
+            shr eax, 8
+            mov byte ptr [edi + 2], al
+            add edi, 3
+            add esi, 16
+            mov ecx, 512
+            rep movsd
+            inc lba
+            inc i
+        .ENDW
+        mov eax, n
+        imul eax, 2051
+        invoke DfWriteRaw, g_dfOut, eax
+    .ENDW
+    .IF g_dfErr == 0
+        lea edi, hdr
+        mov dword ptr [edi], 0FFFFFFFCh     ; end marker: type 0, count all ones
+        mov byte ptr [edi + 4], 3Fh
+        mov eax, edc
+        mov dword ptr [edi + 5], eax
+        invoke DfWriteRaw, addr hdr, 9
+        .IF g_dfErr == 0
+            mov ok, TRUE
+        .ENDIF
+    .ENDIF
+done:
+    invoke WrEnd, ok, hIn, hOut, pszDst
+    ret
+EcmWrapFile ENDP
 
 END

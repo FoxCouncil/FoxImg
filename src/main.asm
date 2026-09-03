@@ -7,7 +7,7 @@ VK_ESCAPE   equ 1Bh
 g_hInst     dd 0
 g_hWnd      dd 0
 g_hAccel    dd 0
-g_saveIsCue dd 0
+g_saveDesc  dd 0                        ; DESC_*: the text descriptor written beside the data file
 g_saveKind  dd 0
 g_saveFilter dd 0                       ; nFilterIndex from the last save dialog
 g_saveRaw   dd 0                        ; cue sheet says MODE1/2352
@@ -40,6 +40,10 @@ WSTR szExtBinDot, <.bin>
 WSTR szExtGzDot, <.gz>
 WSTR szExtZipDot, <.zip>
 WSTR szExtCsoDot, <.cso>
+WSTR szExtTocDot, <.toc>
+WSTR szExtCcdDot, <.ccd>
+WSTR szExtImgDot, <.img>
+WSTR szExtEcmDot, <.ecm>
 WSTR szExtIszDot, <.isz>
 WSTR szExtDaxDot, <.dax>
 WSTR szExtJsoDot, <.jso>
@@ -49,7 +53,8 @@ WSTR szExtDaaDot, <.daa>
 WSTR szExtDmgDot, <.dmg>
 ; save extensions in SAVE_* order: the index plus one is the kind
 g_saveExts  dd offset szExtGzDot, offset szExtZipDot, offset szExtCsoDot, offset szExtIszDot, offset szExtDaxDot
-            dd offset szExtJsoDot, offset szExtGczDot, offset szExtUifDot, offset szExtDaaDot, offset szExtDmgDot, 0
+            dd offset szExtJsoDot, offset szExtGczDot, offset szExtUifDot, offset szExtDaaDot, offset szExtDmgDot
+            dd offset szExtEcmDot, 0
 WSTR szTmpSuffix, <.tmp>
 WSTR szSwRaw, </raw>
 szCliOk     db 'FoxImg: wrote ', 0
@@ -88,6 +93,12 @@ szFilterSave LABEL WORD
     dw '*','.','d','a','a',0
     dw 'D','M','G',' ','i','m','a','g','e',' ','(','*','.','d','m','g',')',0
     dw '*','.','d','m','g',0
+    dw 'E','C','M',' ','i','m','a','g','e',' ','(','*','.','e','c','m',')',0
+    dw '*','.','e','c','m',0
+    dw 'c','d','r','d','a','o',' ','T','O','C',' ','(','*','.','t','o','c',')',0
+    dw '*','.','t','o','c',0
+    dw 'C','l','o','n','e','C','D',' ','(','*','.','c','c','d',')',0
+    dw '*','.','c','c','d',0
     dw 0
 szFilterAll LABEL WORD
     dw 'A','l','l',' ','F','i','l','e','s',' ','(','*','.','*',')',0
@@ -101,6 +112,98 @@ szCueRawFmt dw 'F','I','L','E',' ','"','%','s','"',' ','B','I','N','A','R','Y',1
             dw ' ',' ','T','R','A','C','K',' ','0','1',' ','M','O','D','E','1','/','2','3','5','2',13,10
             dw ' ',' ',' ',' ','I','N','D','E','X',' ','0','1',' ','0','0',':','0','0',':','0','0',13,10,0
 SAVE_FILTER_RAW equ 4                   ; the "BIN/CUE raw" entry of szFilterSave
+WriteAllFile PROTO :DWORD,:DWORD,:DWORD
+DESC_NONE   equ 0
+DESC_CUE    equ 1
+DESC_TOC    equ 2
+DESC_CCD    equ 3
+szTocFmt    dw 'C','D','_','R','O','M',13,10
+            dw 13,10
+            dw '/','/',' ','T','r','a','c','k',' ','1',13,10
+            dw 'T','R','A','C','K',' ','M','O','D','E','1','_','R','A','W',13,10
+            dw 'N','O',' ','C','O','P','Y',13,10
+            dw 'D','A','T','A','F','I','L','E',' ','"','%','s','"',13,10,0
+szCcdFmt        db '[CloneCD]', 13, 10
+                db 'Version=3', 13, 10
+                db 13, 10
+                db '[Disc]', 13, 10
+                db 'TocEntries=4', 13, 10
+                db 'Sessions=1', 13, 10
+                db 'DataTracksScrambled=0', 13, 10
+                db 'CDTextLength=0', 13, 10
+                db 13, 10
+                db '[Session 1]', 13, 10
+                db 'PreGapMode=1', 13, 10
+                db 'PreGapSubC=0', 13, 10
+                db 13, 10
+                db '[Entry 0]', 13, 10
+                db 'Session=1', 13, 10
+                db 'Point=0xa0', 13, 10
+                db 'ADR=0x01', 13, 10
+                db 'Control=0x04', 13, 10
+                db 'TrackNo=0', 13, 10
+                db 'AMin=0', 13, 10
+                db 'ASec=0', 13, 10
+                db 'AFrame=0', 13, 10
+                db 'ALBA=-150', 13, 10
+                db 'Zero=0', 13, 10
+                db 'PMin=1', 13, 10
+                db 'PSec=0', 13, 10
+                db 'PFrame=0', 13, 10
+                db 'PLBA=4350', 13, 10
+                db 13, 10
+                db '[Entry 1]', 13, 10
+                db 'Session=1', 13, 10
+                db 'Point=0xa1', 13, 10
+                db 'ADR=0x01', 13, 10
+                db 'Control=0x04', 13, 10
+                db 'TrackNo=0', 13, 10
+                db 'AMin=0', 13, 10
+                db 'ASec=0', 13, 10
+                db 'AFrame=0', 13, 10
+                db 'ALBA=-150', 13, 10
+                db 'Zero=0', 13, 10
+                db 'PMin=1', 13, 10
+                db 'PSec=0', 13, 10
+                db 'PFrame=0', 13, 10
+                db 'PLBA=4350', 13, 10
+                db 13, 10
+                db '[Entry 2]', 13, 10
+                db 'Session=1', 13, 10
+                db 'Point=0xa2', 13, 10
+                db 'ADR=0x01', 13, 10
+                db 'Control=0x04', 13, 10
+                db 'TrackNo=0', 13, 10
+                db 'AMin=0', 13, 10
+                db 'ASec=0', 13, 10
+                db 'AFrame=0', 13, 10
+                db 'ALBA=-150', 13, 10
+                db 'Zero=0', 13, 10
+                db 'PMin=%d', 13, 10
+                db 'PSec=%d', 13, 10
+                db 'PFrame=%d', 13, 10
+                db 'PLBA=%d', 13, 10
+                db 13, 10
+                db '[Entry 3]', 13, 10
+                db 'Session=1', 13, 10
+                db 'Point=0x01', 13, 10
+                db 'ADR=0x01', 13, 10
+                db 'Control=0x04', 13, 10
+                db 'TrackNo=0', 13, 10
+                db 'AMin=0', 13, 10
+                db 'ASec=0', 13, 10
+                db 'AFrame=0', 13, 10
+                db 'ALBA=-150', 13, 10
+                db 'Zero=0', 13, 10
+                db 'PMin=0', 13, 10
+                db 'PSec=2', 13, 10
+                db 'PFrame=0', 13, 10
+                db 'PLBA=0', 13, 10
+                db 13, 10
+                db '[TRACK 1]', 13, 10
+                db 'MODE=1', 13, 10
+                db 'INDEX 1=0', 13, 10
+                db 0
 MULTI_BUF   equ 32768
 
 .data?
@@ -198,16 +301,12 @@ OpenImage PROC pszPath:DWORD
     ret
 OpenImage ENDP
 
-WriteCueFile PROC USES esi edi pszCue:DWORD, pszBin:DWORD
+; pszFmt formatted with the wide string pszArg, written as ASCII to pszPath
+WriteTextFile PROC USES esi edi pszPath:DWORD, pszFmt:DWORD, pszArg:DWORD
     LOCAL szText[512]:WORD
     LOCAL szAscii[512]:BYTE
     LOCAL hOut:DWORD
-    invoke PathLeaf, pszBin
-    mov ecx, offset szCueFmt
-    .IF g_saveRaw != 0
-        mov ecx, offset szCueRawFmt
-    .ENDIF
-    invoke wsprintfW, addr szText, ecx, eax
+    invoke wsprintfW, addr szText, pszFmt, pszArg
     lea esi, szText
     lea edi, szAscii
     .WHILE word ptr [esi] != 0
@@ -221,26 +320,89 @@ WriteCueFile PROC USES esi edi pszCue:DWORD, pszBin:DWORD
     .ENDW
     lea eax, szAscii
     sub edi, eax
-    invoke CreateFileW, pszCue, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL
+    invoke WriteAllFile, pszPath, addr szAscii, edi
+    ret
+WriteTextFile ENDP
+
+; cb bytes at pData as the whole of pszPath
+WriteAllFile PROC pszPath:DWORD, pData:DWORD, cb:DWORD
+    LOCAL hOut:DWORD
+    invoke CreateFileW, pszPath, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL
     .IF eax == INVALID_HANDLE_VALUE
         xor eax, eax
         ret
     .ENDIF
     mov hOut, eax
-    invoke WriteAll, hOut, addr szAscii, edi
+    invoke WriteAll, hOut, pData, cb
     invoke CloseHandle, hOut
     mov eax, TRUE
     ret
-WriteCueFile ENDP
+WriteAllFile ENDP
+
+; The descriptor beside the data file, by g_saveDesc: a cue sheet (2048 or raw
+; by g_saveRaw), a cdrdao toc, or a CloneCD ccd with the TOC entries of one
+; data track. TRUE on success.
+WriteDescFile PROC pszDesc:DWORD, pszData:DWORD
+    LOCAL hData:DWORD
+    LOCAL sizeLo:DWORD
+    LOCAL sizeHi:DWORD
+    LOCAL sectors:DWORD
+    LOCAL mins:DWORD
+    LOCAL secs:DWORD
+    LOCAL frames:DWORD
+    LOCAL szText[1024]:BYTE
+    mov eax, g_saveDesc
+    .IF eax == DESC_CUE
+        invoke PathLeaf, pszData
+        mov ecx, offset szCueFmt
+        .IF g_saveRaw != 0
+            mov ecx, offset szCueRawFmt
+        .ENDIF
+        invoke WriteTextFile, pszDesc, ecx, eax
+    .ELSEIF eax == DESC_TOC
+        invoke PathLeaf, pszData
+        invoke WriteTextFile, pszDesc, offset szTocFmt, eax
+    .ELSEIF eax == DESC_CCD
+        ; the lead-out sits after the last sector; MSF counts from 00:02:00
+        invoke FileOpenRead, pszData
+        .IF eax == INVALID_HANDLE_VALUE
+            xor eax, eax
+            ret
+        .ENDIF
+        mov hData, eax
+        invoke FileSize64, hData, addr sizeLo, addr sizeHi
+        invoke CloseHandle, hData
+        mov eax, sizeLo
+        xor edx, edx
+        mov ecx, 2352
+        div ecx
+        mov sectors, eax
+        add eax, 150
+        xor edx, edx
+        mov ecx, 75
+        div ecx
+        mov frames, edx
+        xor edx, edx
+        mov ecx, 60
+        div ecx
+        mov secs, edx
+        mov mins, eax
+        invoke wsprintfA, addr szText, offset szCcdFmt, mins, secs, frames, sectors
+        invoke WriteAllFile, pszDesc, addr szText, eax
+    .ELSE
+        xor eax, eax
+    .ENDIF
+    ret
+WriteDescFile ENDP
 
 ; Work out what pszTarget asks for: .bin/.cue -> BIN + CUE (raw when the raw
 ; filter was picked), a container extension -> ISO then that container, anything
-; else -> ISO. Fills g_saveIsCue, g_saveRaw, g_saveKind, g_saveData, g_saveCue and
+; else -> ISO. Fills g_saveDesc, g_saveRaw, g_saveKind, g_saveData, g_saveCue and
 ; the .tmp path the writer targets.
 SaveClassify PROC pszTarget:DWORD
     LOCAL szTarget[MAX_PATH]:WORD
     invoke lstrcpynW, addr szTarget, pszTarget, MAX_PATH
-    mov g_saveIsCue, FALSE
+    mov g_saveDesc, DESC_NONE
     mov g_saveRaw, FALSE
     mov g_saveKind, SAVE_NONE
     invoke PathExt, addr szTarget
@@ -248,16 +410,37 @@ SaveClassify PROC pszTarget:DWORD
     invoke lstrcmpiW, eax, offset szExtCueDot
     pop ecx
     .IF eax == 0
-        mov g_saveIsCue, TRUE
+        mov g_saveDesc, DESC_CUE
         invoke lstrcpynW, offset g_saveCue, addr szTarget, MAX_PATH
         invoke PathWithExt, offset g_saveData, addr szTarget, offset szExtBinDot
     .ELSE
+        push ecx
         invoke lstrcmpiW, ecx, offset szExtBinDot
+        pop ecx
         .IF eax == 0
-            mov g_saveIsCue, TRUE
+            mov g_saveDesc, DESC_CUE
             invoke lstrcpynW, offset g_saveData, addr szTarget, MAX_PATH
             invoke PathWithExt, offset g_saveCue, addr szTarget, offset szExtCueDot
         .ELSE
+            push ecx
+            invoke lstrcmpiW, ecx, offset szExtTocDot
+            pop ecx
+            .IF eax == 0
+                mov g_saveDesc, DESC_TOC
+                mov g_saveFilter, SAVE_FILTER_RAW
+                invoke lstrcpynW, offset g_saveCue, addr szTarget, MAX_PATH
+                invoke PathWithExt, offset g_saveData, addr szTarget, offset szExtBinDot
+            .ELSE
+                invoke lstrcmpiW, ecx, offset szExtCcdDot
+                .IF eax == 0
+                    mov g_saveDesc, DESC_CCD
+                    mov g_saveFilter, SAVE_FILTER_RAW
+                    invoke lstrcpynW, offset g_saveCue, addr szTarget, MAX_PATH
+                    invoke PathWithExt, offset g_saveData, addr szTarget, offset szExtImgDot
+                .ENDIF
+            .ENDIF
+        .ENDIF
+        .IF g_saveDesc == DESC_NONE
             ; anything in the save table is an ISO first, then that container
             push esi
             mov esi, offset g_saveExts
@@ -278,7 +461,7 @@ SaveClassify PROC pszTarget:DWORD
             invoke lstrcpynW, offset g_saveData, addr szTarget, MAX_PATH
         .ENDIF
     .ENDIF
-    .IF g_saveIsCue != 0 && g_saveFilter == SAVE_FILTER_RAW
+    .IF g_saveDesc != DESC_NONE && g_saveFilter == SAVE_FILTER_RAW
         mov g_saveRaw, TRUE                 ; second pass turns the 2048 image into raw sectors
         mov g_saveKind, SAVE_RAW
     .ENDIF
@@ -315,8 +498,8 @@ CliConvert PROC
             invoke MoveFileExW, offset g_saveTmp, offset g_saveData, MOVEFILE_REPLACE_EXISTING
             .IF eax != 0
                 mov ok, TRUE
-                .IF g_saveIsCue != 0
-                    invoke WriteCueFile, offset g_saveCue, offset g_saveData
+                .IF g_saveDesc != DESC_NONE
+                    invoke WriteDescFile, offset g_saveCue, offset g_saveData
                     mov ok, eax
                 .ENDIF
             .ENDIF
@@ -369,8 +552,8 @@ SaveFinish PROC result:DWORD
         .ENDIF
         ret
     .ENDIF
-    .IF g_saveIsCue != 0
-        invoke WriteCueFile, offset g_saveCue, offset g_saveData
+    .IF g_saveDesc != DESC_NONE
+        invoke WriteDescFile, offset g_saveCue, offset g_saveData
         invoke OpenImage, offset g_saveCue
     .ELSE
         invoke OpenImage, offset g_saveData

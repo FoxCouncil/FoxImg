@@ -4969,8 +4969,8 @@ ZfPutMem ENDP
 ; One CD hunk (cdzl or cdlz): ecc bitmap and base-length header, then the sector
 ; halves (2352 bytes each) as one stream. The subcode stream that follows is of
 ; no use for browsing, so it stays in the file untouched; the output is a plain
-; 2352-byte raw image. Flagged frames get their sync pattern back; the stripped
-; ECC parity stays zero, which no reader here ever checks (as with ECM).
+; 2352-byte raw image. Flagged frames get their sync pattern back, and MODE1
+; frames their EDC and parity.
 ChdCdHunk PROC USES esi edi ebx offLo:DWORD, offHi:DWORD, cb:DWORD, isLzma:DWORD
     LOCAL frames:DWORD
     LOCAL eccBytes:DWORD
@@ -5063,6 +5063,10 @@ ChdCdHunk PROC USES esi edi ebx offLo:DWORD, offHi:DWORD, cb:DWORD, isLzma:DWORD
             mov esi, offset szSync
             mov ecx, 12
             rep movsb
+            sub edi, 12
+            .IF byte ptr [edi + 15] == 1
+                invoke RawFixMode1, edi
+            .ENDIF
         .ENDIF
         inc i
     .ENDW

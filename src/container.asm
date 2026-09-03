@@ -840,7 +840,7 @@ CtScan ENDP
 
 ; ---------------------------------------------------------------------------
 ; ECM (Error Code Modeler): sectors stored without sync / EDC / ECC. Decoded once into %TEMP%\FoxImg\<name>.bin
-; as raw 2352-byte sectors (checksums are left zero; the readers never verify them), then opened like a BIN.
+; as raw 2352-byte sectors, MODE1 ones with their EDC and parity regenerated, then opened like a BIN.
 ; ---------------------------------------------------------------------------
 ECM_BUF         equ 1024 * 1024
 
@@ -942,6 +942,23 @@ EcmCopy PROC USES ebx cb:DWORD
     ret
 EcmCopy ENDP
 
+; cb input bytes into pDst; FALSE at end of input
+EcmRead PROC USES edi pDst:DWORD, cb:DWORD
+    mov edi, pDst
+    .WHILE cb != 0
+        invoke EcmByte
+        .IF eax == 100h
+            xor eax, eax
+            ret
+        .ENDIF
+        mov [edi], al
+        inc edi
+        dec cb
+    .ENDW
+    mov eax, TRUE
+    ret
+EcmRead ENDP
+
 ; Build %TEMP%\FoxImg\<leaf>.bin and make sure the directory exists
 CtTempOut PROC pszOut:DWORD, pszPath:DWORD
     LOCAL szTemp[MAX_PATH]:WORD
@@ -966,6 +983,7 @@ CtOpenEcm PROC USES esi edi ebx pszPath:DWORD
     LOCAL sub4[4]:BYTE
     LOCAL addr3[3]:BYTE
     LOCAL nRead:DWORD
+    LOCAL sec[2352]:BYTE
 
     mov ok, FALSE
     invoke FileOpenRead, pszPath
@@ -1036,18 +1054,21 @@ CtOpenEcm PROC USES esi edi ebx pszPath:DWORD
             .BREAK .IF eax == 0
         .ELSE
             .WHILE num != 0
-                invoke EcmPut, offset szSync, 12
                 .IF kind == 1
-                    ; mode 1: address(3) + data(2048) stored
-                    invoke EcmCopy, 3
+                    ; mode 1: address(3) + data(2048) stored; sync, mode byte, EDC and parity regenerated
+                    lea edi, sec
+                    mov esi, offset szSync
+                    mov ecx, 12
+                    rep movsb
+                    invoke EcmRead, addr sec[12], 3
                     .BREAK .IF eax == 0
-                    mov al, 1
-                    mov addr3[0], al
-                    invoke EcmPut, addr addr3, 1
-                    invoke EcmCopy, 2048
+                    mov sec[15], 1
+                    invoke EcmRead, addr sec[16], 2048
                     .BREAK .IF eax == 0
-                    invoke EcmPut, NULL, 288
+                    invoke RawFixMode1, addr sec
+                    invoke EcmPut, addr sec, 2352
                 .ELSE
+                    invoke EcmPut, offset szSync, 12
                     ; mode 2: address regenerated (left zero), subheader half(4) stored twice, then data
                     invoke EcmPut, NULL, 3
                     mov addr3[0], 2

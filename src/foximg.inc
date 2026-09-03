@@ -1178,6 +1178,8 @@ UifCompressFile     PROTO :DWORD,:DWORD
 DaaCompressFile     PROTO :DWORD,:DWORD
 DmgCompressFile     PROTO :DWORD,:DWORD
 RawWrapFile         PROTO :DWORD,:DWORD        ; 2048-sector image -> MODE1/2352 raw with EDC/ECC
+RawFixMode1         PROTO :DWORD               ; EDC and parity of one MODE1 sector, in place
+EcmWrapFile         PROTO :DWORD,:DWORD        ; 2048-sector image -> .ecm
 ; the compressor session pieces those writers share
 DfSetup             PROTO :DWORD               ; hOut -> BOOL
 DfTeardown          PROTO
@@ -1203,7 +1205,8 @@ SAVE_GCZ                equ 7
 SAVE_UIF                equ 8
 SAVE_DAA                equ 9
 SAVE_DMG                equ 10
-SAVE_RAW                equ 11              ; BIN/CUE as MODE1/2352
+SAVE_ECM                equ 11
+SAVE_RAW                equ 12              ; raw MODE1/2352 data for the cue, toc and ccd descriptors
 
 ; ---------------------------------------------------------------------------
 ; Optical containers (container.asm): NRG, MDS/MDF, CCD/IMG, GDI, TOC, generic scan
