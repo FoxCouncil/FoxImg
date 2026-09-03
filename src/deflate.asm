@@ -5644,9 +5644,9 @@ ChdExpandFile PROC USES esi edi ebx hIn:DWORD, pszDst:DWORD
                 invoke ZfSetInput, dword ptr [esi + 8], dword ptr [esi + 12]
                 .IF fourcc == 62696C7Ah ; zlib: raw deflate
                     invoke ZfInflate
-                .ELSE                   ; lzma
+                .ELSE                   ; lzma: the stream holds the whole hunk; the file is clipped at the end
                     invoke LzmaStart
-                    invoke LzmaDecode, thisCb
+                    invoke LzmaDecode, hunkBytes
                 .ENDIF
             .ENDIF
         .ELSEIF eax == 4                ; stored
@@ -5710,6 +5710,7 @@ ChdExpandFile PROC USES esi edi ebx hIn:DWORD, pszDst:DWORD
         inc i
     .ENDW
     invoke ZfOutFinal
+    invoke ZfClipTotal, totLo, totHi    ; whole last hunks (zlib, lzma) run past the image
     invoke ZfCheckTotal, totLo, totHi
     mov ok, eax
 done:
