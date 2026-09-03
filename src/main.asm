@@ -46,6 +46,7 @@ WSTR szExtImgDot, <.img>
 WSTR szExtEcmDot, <.ecm>
 WSTR szExtNrgDot, <.nrg>
 WSTR szExtZsoDot, <.zso>
+WSTR szExtChdDot, <.chd>
 WSTR szExtMdsDot, <.mds>
 WSTR szExtMdfDot, <.mdf>
 WSTR szExtIszDot, <.isz>
@@ -58,7 +59,7 @@ WSTR szExtDmgDot, <.dmg>
 ; save extensions in SAVE_* order: the index plus one is the kind
 g_saveExts  dd offset szExtGzDot, offset szExtZipDot, offset szExtCsoDot, offset szExtIszDot, offset szExtDaxDot
             dd offset szExtJsoDot, offset szExtGczDot, offset szExtUifDot, offset szExtDaaDot, offset szExtDmgDot
-            dd offset szExtEcmDot, offset szExtNrgDot, offset szExtZsoDot, 0
+            dd offset szExtEcmDot, offset szExtNrgDot, offset szExtZsoDot, offset szExtChdDot, 0
 WSTR szTmpSuffix, <.tmp>
 WSTR szSwRaw, </raw>
 szCliOk     db 'FoxImg: wrote ', 0
@@ -109,6 +110,8 @@ szFilterSave LABEL WORD
     dw '*','.','m','d','s',0
     dw 'Z','S','O',' ','i','m','a','g','e',' ','(','*','.','z','s','o',')',0
     dw '*','.','z','s','o',0
+    dw 'C','H','D',' ','(','*','.','c','h','d',')',0
+    dw '*','.','c','h','d',0
     dw 0
 szFilterAll LABEL WORD
     dw 'A','l','l',' ','F','i','l','e','s',' ','(','*','.','*',')',0

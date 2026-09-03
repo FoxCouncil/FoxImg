@@ -13,7 +13,7 @@ The program is one small executable with no runtime dependencies.
 - Browse an image as a folder tree with a file list, preview pane, and status bar.
 - Add, rename, move, and delete files and folders inside an image.
 - Drag and drop in both directions: from Explorer into the image, and from the image to Explorer.
-- Save or convert any open image to ISO 9660 + Joliet + UDF 1.02, to BIN/CUE (2048 or raw), to cdrdao TOC, CloneCD, Nero, Alcohol 120% or ECM with the sector EDC and ECC generated, to a gzip- or zip-compressed ISO, or to CSO, ISZ, DAX, JSO, GCZ, UIF, DAA or DMG.
+- Save or convert any open image to ISO 9660 + Joliet + UDF 1.02, to BIN/CUE (2048 or raw), to cdrdao TOC, CloneCD, Nero, Alcohol 120% or ECM with the sector EDC and ECC generated, to a gzip- or zip-compressed ISO, or to CSO, ZSO, CHD, ISZ, DAX, JSO, GCZ, UIF, DAA or DMG.
 - Keep El Torito boot records through a save. BIOS and UEFI entries survive, and
   isolinux/GRUB boot info tables are patched for the new layout.
 - Open images of any size. A sliding 64 MB mapping window keeps memory use flat.
@@ -38,7 +38,7 @@ The convert returns exit code 0 on success and prints one line to the console it
 | ISO 9660 + Joliet | .iso .img | Yes | Yes | Level 1 names with ~N de-duplication on write |
 | UDF 1.02 - 2.60 | .iso | Yes | Yes | Writes a 1.02 bridge volume; reads metadata, virtual, and sparable partitions |
 | El Torito boot | - | Yes | Yes | BIOS and UEFI entries; boot info table patching; FAT size detection for UEFI images |
-| Raw sectors | .bin .img | Yes | No | MODE1/2352, MODE2/2352, MODE2/2336, detected by sync sniff |
+| Raw sectors | .bin .img | Yes | Yes | Reads MODE1/2352, MODE2/2352, MODE2/2336, detected by sync sniff; writes MODE1/2352 with the EDC and ECC generated |
 | BIN/CUE | .cue .bin | Yes | Yes | Writes MODE1/2048, or MODE1/2352 raw with the EDC and ECC generated; cue sheet included |
 | Files over 4 GB | - | Yes | Yes | Stored in the UDF half only, as Windows install media does |
 | Nero | .nrg | Yes | Yes | Reads v1 and v2, DAO and TAO chunk lists; writes v2 DAO with one raw track |
@@ -60,7 +60,7 @@ The convert returns exit code 0 on success and prints one line to the console it
 | DAX | .dax | Yes | Yes | PSP: zlib frames and raw NC areas; writes 8 KB zlib frames |
 | JSO | .jso | Yes | Yes | PSP: reads deflate and LZO methods; writes deflate, 2 KB blocks |
 | PBP | .pbp | Yes | No | PS1 Classics EBOOT (PSISOIMG); multi-disc takes disc 1; encrypted PSP UMD declined |
-| CHD | .chd | Yes | No | v5: zlib, LZMA, FLAC, all CD codecs, stored and self hunks; parented CHDs declined |
+| CHD | .chd | Yes | Yes | Reads v5: zlib, LZMA, FLAC, all CD codecs, stored and self hunks; parented CHDs declined. Writes v5 raw (uncompressed hunks, SHA-1 filled) |
 | GCZ | .gcz | Yes | Yes | Dolphin: zlib and stored blocks with the Adler-32 block hashes Dolphin checks |
 | RVZ | .rvz | Yes | No | Dolphin, GameCube discs: Zstandard groups and packed junk; Wii (encrypted partitions) and WIA declined |
 | WBFS | .wbfs | Planned | No | Wii backup file system |

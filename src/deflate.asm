@@ -4816,6 +4816,7 @@ CHD_MAPMAX      equ 64 * 1024 * 1024
 CHD_COUNTMAX    equ 800000h
 
 .data
+PUBLIC szChdMagic
 szChdMagic      db 'MComprHD'
 g_chBitsPtr     dd 0                    ; map bitstream, MSB first
 g_chBitPos      dd 0

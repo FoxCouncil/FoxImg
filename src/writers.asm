@@ -1639,4 +1639,208 @@ Lz4Compress PROC USES esi edi ebx pSrc:DWORD, cb:DWORD, pDst:DWORD
     ret
 Lz4Compress ENDP
 
+; ---------------------------------------------------------------------------
+; CHD v5 (MAME), uncompressed: the 124-byte big-endian header, a map of one
+; dword per hunk giving its position in hunk units, then the hunks, the last
+; one padded. No metadata, so the combined SHA-1 is the SHA-1 of the raw
+; SHA-1 alone. Hashing is the OS's (bcrypt).
+; ---------------------------------------------------------------------------
+CHD_WR_HUNK     equ 32768               ; 16 sectors
+CHD_WR_HDR      equ 124
+
+.data
+szBcSha1        dw 'S','H','A','1',0
+.code
+
+ChdBE32 PROC pDst:DWORD, v:DWORD
+    mov eax, v
+    bswap eax
+    mov ecx, pDst
+    mov dword ptr [ecx], eax
+    ret
+ChdBE32 ENDP
+
+ChdWriteFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
+    LOCAL hIn:DWORD
+    LOCAL hOut:DWORD
+    LOCAL ok:DWORD
+    LOCAL hAlg:DWORD
+    LOCAL hHash:DWORD
+    LOCAL off[2]:DWORD
+    LOCAL nHunk:DWORD
+    LOCAL mapCb:DWORD
+    LOCAL dataStart:DWORD                   ; in hunk units
+    LOCAL padCb:DWORD
+    LOCAL i:DWORD
+    LOCAL n:DWORD
+    LOCAL hdr[CHD_WR_HDR]:BYTE
+    LOCAL rawSha[20]:BYTE
+    mov ok, FALSE
+    mov hAlg, 0
+    mov hHash, 0
+    invoke WrBegin, pszSrc, pszDst
+    .IF eax == 0
+        ret
+    .ENDIF
+    mov hIn, eax
+    mov hOut, edx
+    .IF g_dfSizeLo == 0 && g_dfSizeHi == 0
+        jmp done
+    .ENDIF
+    ; hunks = ceil(size / hunk); the map after the header; data on the first hunk boundary past it
+    mov eax, g_dfSizeLo
+    mov edx, g_dfSizeHi
+    add eax, CHD_WR_HUNK - 1
+    adc edx, 0
+    shrd eax, edx, 15
+    shr edx, 15
+    .IF edx != 0 || eax > 100000h
+        jmp done                            ; 4 GB of hunks is plenty for a disc
+    .ENDIF
+    mov nHunk, eax
+    shl eax, 2
+    mov mapCb, eax
+    add eax, CHD_WR_HDR + CHD_WR_HUNK - 1
+    shr eax, 15
+    mov dataStart, eax
+    shl eax, 15
+    sub eax, mapCb
+    sub eax, CHD_WR_HDR
+    mov padCb, eax
+    invoke BCryptOpenAlgorithmProvider, addr hAlg, offset szBcSha1, NULL, 0
+    .IF eax != 0
+        jmp done
+    .ENDIF
+    invoke BCryptCreateHash, hAlg, addr hHash, NULL, 0, NULL, 0, 0
+    .IF eax != 0
+        jmp done
+    .ENDIF
+    ; header placeholder, the map, the padding
+    lea edi, hdr
+    xor eax, eax
+    mov ecx, CHD_WR_HDR / 4
+    rep stosd
+    invoke DfWriteRaw, addr hdr, CHD_WR_HDR
+    mov i, 0
+    .WHILE g_dfErr == 0
+        mov eax, i
+        .BREAK .IF eax >= nHunk
+        ; a run of map entries through the output buffer: dataStart + i, big-endian
+        mov edi, g_dfOut
+        mov n, 0
+        .WHILE 1
+            mov eax, i
+            .BREAK .IF eax >= nHunk
+            .BREAK .IF n >= 65536
+            add eax, dataStart
+            bswap eax
+            mov dword ptr [edi], eax
+            add edi, 4
+            inc i
+            inc n
+        .ENDW
+        mov eax, n
+        shl eax, 2
+        invoke DfWriteRaw, g_dfOut, eax
+    .ENDW
+    mov eax, padCb
+    .IF eax != 0
+        mov edi, g_dfOut
+        mov ecx, eax
+        xor eax, eax
+        rep stosb
+        invoke DfWriteRaw, g_dfOut, padCb
+    .ENDIF
+    ; the hunks, hashed as they go
+    mov off[0], 0
+    mov off[4], 0
+    .WHILE g_dfErr == 0
+        invoke WrReadBlock, hIn, addr off, CHD_WR_HUNK * 16
+        .BREAK .IF eax == 0
+        mov n, eax
+        invoke BCryptHashData, hHash, g_dfChunkPtr, n, 0
+        .IF eax != 0
+            mov g_dfErr, 1
+            .BREAK
+        .ENDIF
+        ; pad a short tail to whole hunks
+        mov eax, n
+        add eax, CHD_WR_HUNK - 1
+        and eax, -CHD_WR_HUNK
+        mov ecx, eax
+        sub ecx, n
+        .IF ecx != 0
+            mov edi, g_dfChunkPtr
+            add edi, n
+            push eax
+            xor eax, eax
+            rep stosb
+            pop eax
+        .ENDIF
+        invoke DfWriteRaw, g_dfChunkPtr, eax
+    .ENDW
+    .IF g_dfErr != 0
+        jmp done
+    .ENDIF
+    invoke BCryptFinishHash, hHash, addr rawSha, 20, 0
+    .IF eax != 0
+        jmp done
+    .ENDIF
+    ; combined SHA-1 over the raw SHA-1 (no metadata hashes)
+    invoke BCryptDestroyHash, hHash
+    mov hHash, 0
+    invoke BCryptCreateHash, hAlg, addr hHash, NULL, 0, NULL, 0, 0
+    .IF eax != 0
+        jmp done
+    .ENDIF
+    invoke BCryptHashData, hHash, addr rawSha, 20, 0
+    lea eax, hdr
+    add eax, 84
+    invoke BCryptFinishHash, hHash, eax, 20, 0
+    .IF eax != 0
+        jmp done
+    .ENDIF
+    ; the header: magic, length, version 5, no compressors, sizes, offsets, hashes
+    lea edi, hdr
+    mov esi, offset szChdMagic
+    mov ecx, 8
+    rep movsb
+    lea edi, hdr
+    lea eax, [edi + 8]
+    invoke ChdBE32, eax, CHD_WR_HDR
+    lea eax, [edi + 12]
+    invoke ChdBE32, eax, 5
+    lea eax, [edi + 32]
+    invoke ChdBE32, eax, g_dfSizeHi         ; logical bytes
+    lea eax, [edi + 36]
+    invoke ChdBE32, eax, g_dfSizeLo
+    lea eax, [edi + 40]
+    invoke ChdBE32, eax, 0                  ; map offset
+    lea eax, [edi + 44]
+    invoke ChdBE32, eax, CHD_WR_HDR
+    lea eax, [edi + 56]
+    invoke ChdBE32, eax, CHD_WR_HUNK        ; hunk and unit bytes
+    lea eax, [edi + 60]
+    invoke ChdBE32, eax, 2048
+    lea edi, hdr
+    add edi, 64
+    lea esi, rawSha
+    mov ecx, 20
+    rep movsb
+    invoke SetFilePointerEx, hOut, 0, 0, NULL, FILE_BEGIN
+    invoke DfWriteRaw, addr hdr, CHD_WR_HDR
+    .IF g_dfErr == 0
+        mov ok, TRUE
+    .ENDIF
+done:
+    .IF hHash != 0
+        invoke BCryptDestroyHash, hHash
+    .ENDIF
+    .IF hAlg != 0
+        invoke BCryptCloseAlgorithmProvider, hAlg, 0
+    .ENDIF
+    invoke WrEnd, ok, hIn, hOut, pszDst
+    ret
+ChdWriteFile ENDP
+
 END
