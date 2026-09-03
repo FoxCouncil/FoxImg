@@ -13,6 +13,7 @@ includelib dwmapi.lib
 includelib uxtheme.lib
 includelib ntdll.lib
 includelib winmm.lib
+includelib crypt32.lib
 
 ; ---------------------------------------------------------------------------
 ; Macros
@@ -813,6 +814,8 @@ SetFilePointerEx    PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD
 SetFileInformationByHandle PROTO :DWORD,:DWORD,:DWORD,:DWORD
 WideCharToMultiByte PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD,:DWORD
 SetEndOfFile        PROTO :DWORD
+CryptBinaryToStringA PROTO :DWORD,:DWORD,:DWORD,:DWORD,:DWORD
+CRYPT_STRING_BASE64     equ 1              ; wincrypt.h
 AddVectoredExceptionHandler PROTO :DWORD,:DWORD
 CreateDirectoryW    PROTO :DWORD,:DWORD
 MoveFileExW         PROTO :DWORD,:DWORD,:DWORD
@@ -1162,9 +1165,38 @@ ZfRunExpander       PROTO :DWORD,:DWORD,:DWORD  ; pszSrc, pszDst, body(hIn, pszD
 GzCompressFile      PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL; worker progress + Cancel
 ZipCompressFile     PROTO :DWORD,:DWORD,:DWORD  ; pszSrc, pszDst, pszEntry (UTF-16) -> BOOL, one deflated entry, zip64 past 4 GB
 CsoCompressFile     PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> BOOL, CSO v1 with 2 KB deflate blocks
-EXTERNDEF g_saveGzip:DWORD                      ; save target ends in .gz: worker gzips the image
-EXTERNDEF g_saveZip:DWORD                       ; save target ends in .zip: worker zips it as one entry
-EXTERNDEF g_saveCso:DWORD                       ; save target ends in .cso: worker packs it as CSO
+IszCompressFile     PROTO :DWORD,:DWORD        ; the block-container writers in writers.asm
+DaxCompressFile     PROTO :DWORD,:DWORD
+JsoCompressFile     PROTO :DWORD,:DWORD
+GczCompressFile     PROTO :DWORD,:DWORD
+UifCompressFile     PROTO :DWORD,:DWORD
+DaaCompressFile     PROTO :DWORD,:DWORD
+DmgCompressFile     PROTO :DWORD,:DWORD
+; the compressor session pieces those writers share
+DfSetup             PROTO :DWORD               ; hOut -> BOOL
+DfTeardown          PROTO
+DfOpenPair          PROTO :DWORD,:DWORD        ; pszSrc, pszDst -> hIn in eax, hOut in edx, or 0
+DfClosePair         PROTO :DWORD,:DWORD,:DWORD,:DWORD  ; ok, hIn, hOut, pszDst -> ok
+DfWriteRaw          PROTO :DWORD,:DWORD        ; pData, cb to the session's output
+DfBlockDeflate      PROTO :DWORD,:DWORD        ; cb of the chunk buffer, zlib framing -> length in g_dfOut
+DfAdler32           PROTO :DWORD,:DWORD        ; pData, cb
+EXTERNDEF g_dfChunkPtr:DWORD
+EXTERNDEF g_dfOut:DWORD
+EXTERNDEF g_dfErr:DWORD
+EXTERNDEF g_dfSizeLo:DWORD
+EXTERNDEF g_dfSizeHi:DWORD
+EXTERNDEF g_saveKind:DWORD                      ; SAVE_*: how the worker finishes the image after IsoWrite
+SAVE_NONE               equ 0
+SAVE_GZ                 equ 1
+SAVE_ZIP                equ 2
+SAVE_CSO                equ 3
+SAVE_ISZ                equ 4
+SAVE_DAX                equ 5
+SAVE_JSO                equ 6
+SAVE_GCZ                equ 7
+SAVE_UIF                equ 8
+SAVE_DAA                equ 9
+SAVE_DMG                equ 10
 
 ; ---------------------------------------------------------------------------
 ; Optical containers (container.asm): NRG, MDS/MDF, CCD/IMG, GDI, TOC, generic scan

@@ -35,6 +35,18 @@ WSTR szCancelling, <Cancelling...>
 WSTR szGzSuffix, <.gz>
 WSTR szZipSuffix, <.zip>
 WSTR szCsoSuffix, <.cso>
+WSTR szIszSuffix, <.isz>
+WSTR szDaxSuffix, <.dax>
+WSTR szJsoSuffix, <.jso>
+WSTR szGczSuffix, <.gcz>
+WSTR szUifSuffix, <.uif>
+WSTR szDaaSuffix, <.daa>
+WSTR szDmgSuffix, <.dmg>
+; indexed by SAVE_* - 1: the suffix the second pass writes beside the image, and its writer
+g_saveSuffix    dd offset szGzSuffix, offset szZipSuffix, offset szCsoSuffix, offset szIszSuffix, offset szDaxSuffix
+                dd offset szJsoSuffix, offset szGczSuffix, offset szUifSuffix, offset szDaaSuffix, offset szDmgSuffix
+g_saveWriter    dd offset GzCompressFile, 0, offset CsoCompressFile, offset IszCompressFile, offset DaxCompressFile
+                dd offset JsoCompressFile, offset GczCompressFile, offset UifCompressFile, offset DaaCompressFile, offset DmgCompressFile
 WSTR szIsoDot, <.iso>
 szPctFmt        dw '%','s','.','.','.',' ',' ','%','u','%','%',0
 szDotsFmt       dw '%','s','.','.','.',0
@@ -410,9 +422,13 @@ JobThreadProc PROC USES esi ebx lpParam:DWORD
     .IF eax == JOB_SAVE
         invoke IsoWrite, offset g_jobPath
         mov result, eax
-        .IF eax != 0 && (g_saveGzip != 0 || g_saveZip != 0 || g_saveCso != 0)
-            ; second pass: compress the finished image beside itself, then take its place
-            .IF g_saveZip != 0
+        .IF eax != 0 && g_saveKind != SAVE_NONE
+            ; second pass: pack the finished image beside itself, then take its place
+            mov eax, g_saveKind
+            dec eax
+            mov ecx, dword ptr g_saveSuffix[eax * 4]
+            invoke wsprintfW, addr szGz, offset g_szCatFmt, offset g_jobPath, ecx
+            .IF g_saveKind == SAVE_ZIP
                 ; the entry is named after the target, .zip.tmp -> .iso
                 invoke lstrcpynW, addr szEntry, offset g_jobPath, MAX_PATH
                 invoke lstrlenW, addr szEntry
@@ -421,14 +437,15 @@ JobThreadProc PROC USES esi ebx lpParam:DWORD
                 invoke PathWithExt, addr szEntry2, addr szEntry, offset szIsoDot
                 invoke PathLeaf, addr szEntry2
                 mov pLeaf, eax
-                invoke wsprintfW, addr szGz, offset g_szCatFmt, offset g_jobPath, offset szZipSuffix
                 invoke ZipCompressFile, offset g_jobPath, addr szGz, pLeaf
-            .ELSEIF g_saveCso != 0
-                invoke wsprintfW, addr szGz, offset g_szCatFmt, offset g_jobPath, offset szCsoSuffix
-                invoke CsoCompressFile, offset g_jobPath, addr szGz
             .ELSE
-                invoke wsprintfW, addr szGz, offset g_szCatFmt, offset g_jobPath, offset szGzSuffix
-                invoke GzCompressFile, offset g_jobPath, addr szGz
+                mov eax, g_saveKind
+                dec eax
+                mov eax, dword ptr g_saveWriter[eax * 4]
+                lea ecx, szGz
+                push ecx
+                push offset g_jobPath
+                call eax
             .ENDIF
             .IF eax != 0
                 invoke DeleteFileW, offset g_jobPath

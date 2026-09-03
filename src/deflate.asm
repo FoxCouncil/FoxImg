@@ -264,6 +264,30 @@ ZfCheckTotal PROC expLo:DWORD, expHi:DWORD
     ret
 ZfCheckTotal ENDP
 
+; Cut the output back to the expected size when a container pads its last
+; block out to the block size (GCZ does): the padding was inflated with the
+; rest, so the file runs past the image.
+ZfClipTotal PROC expLo:DWORD, expHi:DWORD
+    .IF g_zfErr == 0
+        mov ecx, g_zfTotLo
+        mov edx, g_zfTotHi
+        sub ecx, expLo
+        sbb edx, expHi
+        .IF !CARRY?
+            or ecx, edx
+            .IF ecx != 0
+                invoke SetFilePointerEx, g_zfHOut, expLo, expHi, NULL, FILE_BEGIN
+                invoke SetEndOfFile, g_zfHOut
+                mov eax, expLo
+                mov g_zfTotLo, eax
+                mov eax, expHi
+                mov g_zfTotHi, eax
+            .ENDIF
+        .ENDIF
+    .ENDIF
+    ret
+ZfClipTotal ENDP
+
 ZfPutB PROC b:DWORD
     mov eax, g_zfOutPos
     .IF eax >= ZF_OUTBUF
@@ -2430,6 +2454,70 @@ DfTeardown PROC
     ret
 DfTeardown ENDP
 
+
+; Adler-32 of cb bytes (RFC 1950); the zlib trailer and GCZ's block hashes
+DfAdler32 PROC USES esi ebx pData:DWORD, cb:DWORD
+    mov esi, pData
+    mov eax, 1
+    xor ebx, ebx
+    mov ecx, cb
+    .WHILE ecx != 0
+        movzx edx, byte ptr [esi]
+        inc esi
+        add eax, edx
+        .IF eax >= 65521
+            sub eax, 65521
+        .ENDIF
+        add ebx, eax
+        .IF ebx >= 65521
+            sub ebx, 65521
+        .ENDIF
+        dec ecx
+    .ENDW
+    shl ebx, 16
+    or eax, ebx
+    ret
+DfAdler32 ENDP
+
+; Deflate the first cb bytes of the chunk buffer into g_dfOut as one final
+; block - zlib-framed when asked - and return the length. Nothing reaches the
+; file: the caller decides whether the result is worth keeping. The hash table
+; shrinks for small blocks, since it is cleared for every one. cb must stay
+; well under the output buffer, or the emitter would flush mid-block.
+DfBlockDeflate PROC USES edi cb:DWORD, zlibFrame:DWORD
+    mov eax, cb
+    mov g_dfChunkLen, eax
+    mov g_dfHashMask, DF_HASHSZ - 1
+    .IF eax <= 16384
+        mov g_dfHashMask, 4095
+    .ENDIF
+    mov g_dfAllowStored, 0
+    mov g_dfBitBuf, 0
+    mov g_dfBitCnt, 0
+    mov g_dfOutPos, 0
+    .IF zlibFrame != 0
+        mov edi, g_dfOut
+        mov word ptr [edi], 9C78h           ; CMF/FLG: deflate, 32 KB window, default level
+        mov g_dfOutPos, 2
+    .ENDIF
+    invoke DfCompressChunk, 1
+    .IF g_dfBitCnt != 0
+        invoke DfEmit, 0, 7
+        mov g_dfBitCnt, 0
+        mov g_dfBitBuf, 0
+    .ENDIF
+    .IF zlibFrame != 0
+        invoke DfAdler32, g_dfChunkPtr, cb
+        bswap eax
+        mov edi, g_dfOut
+        add edi, g_dfOutPos
+        mov dword ptr [edi], eax
+        add g_dfOutPos, 4
+    .ENDIF
+    mov eax, g_dfOutPos
+    ret
+DfBlockDeflate ENDP
+
 ; Deflate hIn to hOut as one raw stream, byte-aligned at the end, with progress
 ; totals and Cancel honoured. Leaves the input size, its CRC-32 and the stream
 ; length in g_dfSize*, g_dfCrc, g_dfComp*. Returns TRUE on success.
@@ -3613,6 +3701,7 @@ GczExpandFile PROC USES esi ebx hIn:DWORD, pszDst:DWORD
         inc i
     .ENDW
     invoke ZfOutFinal
+    invoke ZfClipTotal, totLo, totHi
     invoke ZfCheckTotal, totLo, totHi
     mov ok, eax
 done:

@@ -8,9 +8,7 @@ g_hInst     dd 0
 g_hWnd      dd 0
 g_hAccel    dd 0
 g_saveIsCue dd 0
-g_saveGzip  dd 0
-g_saveZip   dd 0
-g_saveCso   dd 0
+g_saveKind  dd 0
 
 WSTR szClassName, <FoxImgMain>
 WSTR szTitle, <FoxImg>
@@ -39,6 +37,16 @@ WSTR szExtBinDot, <.bin>
 WSTR szExtGzDot, <.gz>
 WSTR szExtZipDot, <.zip>
 WSTR szExtCsoDot, <.cso>
+WSTR szExtIszDot, <.isz>
+WSTR szExtDaxDot, <.dax>
+WSTR szExtJsoDot, <.jso>
+WSTR szExtGczDot, <.gcz>
+WSTR szExtUifDot, <.uif>
+WSTR szExtDaaDot, <.daa>
+WSTR szExtDmgDot, <.dmg>
+; save extensions in SAVE_* order: the index plus one is the kind
+g_saveExts  dd offset szExtGzDot, offset szExtZipDot, offset szExtCsoDot, offset szExtIszDot, offset szExtDaxDot
+            dd offset szExtJsoDot, offset szExtGczDot, offset szExtUifDot, offset szExtDaaDot, offset szExtDmgDot, 0
 WSTR szTmpSuffix, <.tmp>
 WSTR szNewFolderName, <New Folder>
 WSTR szNewFileName, <New File>
@@ -57,6 +65,20 @@ szFilterSave LABEL WORD
     dw '*','.','z','i','p',0
     dw 'C','S','O',' ','i','m','a','g','e',' ','(','*','.','c','s','o',')',0
     dw '*','.','c','s','o',0
+    dw 'I','S','Z',' ','i','m','a','g','e',' ','(','*','.','i','s','z',')',0
+    dw '*','.','i','s','z',0
+    dw 'D','A','X',' ','i','m','a','g','e',' ','(','*','.','d','a','x',')',0
+    dw '*','.','d','a','x',0
+    dw 'J','S','O',' ','i','m','a','g','e',' ','(','*','.','j','s','o',')',0
+    dw '*','.','j','s','o',0
+    dw 'G','C','Z',' ','i','m','a','g','e',' ','(','*','.','g','c','z',')',0
+    dw '*','.','g','c','z',0
+    dw 'U','I','F',' ','i','m','a','g','e',' ','(','*','.','u','i','f',')',0
+    dw '*','.','u','i','f',0
+    dw 'D','A','A',' ','i','m','a','g','e',' ','(','*','.','d','a','a',')',0
+    dw '*','.','d','a','a',0
+    dw 'D','M','G',' ','i','m','a','g','e',' ','(','*','.','d','m','g',')',0
+    dw '*','.','d','m','g',0
     dw 0
 szFilterAll LABEL WORD
     dw 'A','l','l',' ','F','i','l','e','s',' ','(','*','.','*',')',0
@@ -197,9 +219,7 @@ SaveBegin PROC pszTarget:DWORD
     LOCAL szTarget[MAX_PATH]:WORD
     invoke lstrcpynW, addr szTarget, pszTarget, MAX_PATH
     mov g_saveIsCue, FALSE
-    mov g_saveGzip, FALSE
-    mov g_saveZip, FALSE
-    mov g_saveCso, FALSE
+    mov g_saveKind, SAVE_NONE
     invoke PathExt, addr szTarget
     push eax
     invoke lstrcmpiW, eax, offset szExtCueDot
@@ -215,25 +235,23 @@ SaveBegin PROC pszTarget:DWORD
             invoke lstrcpynW, offset g_saveData, addr szTarget, MAX_PATH
             invoke PathWithExt, offset g_saveCue, addr szTarget, offset szExtCueDot
         .ELSE
-            invoke PathExt, addr szTarget
-            push eax
-            invoke lstrcmpiW, eax, offset szExtGzDot
-            pop ecx
-            .IF eax == 0
-                mov g_saveGzip, TRUE
-            .ELSE
-                push ecx
-                invoke lstrcmpiW, ecx, offset szExtZipDot
-                pop ecx
+            ; anything in the save table is an ISO first, then that container
+            push esi
+            mov esi, offset g_saveExts
+            .WHILE dword ptr [esi] != 0
+                invoke PathExt, addr szTarget
+                invoke lstrcmpiW, eax, dword ptr [esi]
                 .IF eax == 0
-                    mov g_saveZip, TRUE
-                .ELSE
-                    invoke lstrcmpiW, ecx, offset szExtCsoDot
-                    .IF eax == 0
-                        mov g_saveCso, TRUE
-                    .ENDIF
+                    mov eax, esi
+                    sub eax, offset g_saveExts
+                    shr eax, 2
+                    inc eax
+                    mov g_saveKind, eax
+                    .BREAK
                 .ENDIF
-            .ENDIF
+                add esi, 4
+            .ENDW
+            pop esi
             invoke lstrcpynW, offset g_saveData, addr szTarget, MAX_PATH
         .ENDIF
     .ENDIF

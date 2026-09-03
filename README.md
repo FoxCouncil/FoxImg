@@ -13,7 +13,7 @@ The program is one small executable with no runtime dependencies.
 - Browse an image as a folder tree with a file list, preview pane, and status bar.
 - Add, rename, move, and delete files and folders inside an image.
 - Drag and drop in both directions: from Explorer into the image, and from the image to Explorer.
-- Save or convert any open image to ISO 9660 + Joliet + UDF 1.02, to BIN/CUE, to CSO, or to a gzip- or zip-compressed ISO.
+- Save or convert any open image to ISO 9660 + Joliet + UDF 1.02, to BIN/CUE, to a gzip- or zip-compressed ISO, or to CSO, ISZ, DAX, JSO, GCZ, UIF, DAA or DMG.
 - Keep El Torito boot records through a save. BIOS and UEFI entries survive, and
   isolinux/GRUB boot info tables are patched for the new layout.
 - Open images of any size. A sliding 64 MB mapping window keeps memory use flat.
@@ -49,25 +49,25 @@ The program is one small executable with no runtime dependencies.
 | zip | .zip | Yes | Yes | Reads the largest stored or deflated entry, CRC verified; Save As writes one deflated entry, zip64 past 4 GB |
 | CSO / CISO | .cso .ciso | Yes | Yes | Reads v0/v1/v2, deflate and LZ4 blocks (PSP, Dreamcast tooling); Save As writes v1 with 2 KB deflate blocks |
 | ZSO | .zso | Yes | No | CISO layout with LZ4 blocks |
-| DAX | .dax | Yes | No | PSP: zlib frames and raw NC areas |
-| JSO | .jso | Yes | No | PSP: deflate and LZO methods |
+| DAX | .dax | Yes | Yes | PSP: zlib frames and raw NC areas; writes 8 KB zlib frames |
+| JSO | .jso | Yes | Yes | PSP: reads deflate and LZO methods; writes deflate, 2 KB blocks |
 | PBP | .pbp | Yes | No | PS1 Classics EBOOT (PSISOIMG); multi-disc takes disc 1; encrypted PSP UMD declined |
 | CHD | .chd | Yes | No | v5: zlib, LZMA, FLAC, all CD codecs, stored and self hunks; parented CHDs declined |
-| GCZ | .gcz | Yes | No | Dolphin: zlib blocks, stored blocks |
+| GCZ | .gcz | Yes | Yes | Dolphin: zlib and stored blocks with the Adler-32 block hashes Dolphin checks |
 | RVZ | .rvz | Yes | No | Dolphin, GameCube discs: Zstandard groups and packed junk; Wii (encrypted partitions) and WIA declined |
 | WBFS | .wbfs | Planned | No | Wii backup file system |
 | GCM | .gcm .iso | Yes | No | Big-endian FST reader; files need no block alignment |
 | NKit | .nkit.iso | Planned | No | Wii / GameCube |
-| ISZ | .isz | Yes | No | UltraISO: zlib, bzip2, raw and zero chunks; AES declined |
-| DAA | .daa | Yes | No | PowerISO v0x100 deflate; v0x110, LZMA and encrypted declined |
-| UIF | .uif | Yes | No | MagicISO: zlib, raw and zero blocks; passworded declined |
+| ISZ | .isz | Yes | Yes | UltraISO: reads zlib, bzip2, raw and zero chunks, AES declined; writes zlib, raw and zero |
+| DAA | .daa | Yes | Yes | PowerISO v0x100 deflate; v0x110, LZMA and encrypted declined |
+| UIF | .uif | Yes | Yes | MagicISO: zlib, raw and zero blocks; passworded declined |
 | BlindWrite 5/6 | .b5t .b6t | Yes | No | Descriptor beside the .b5i/.b6i data file |
 | C2D | .c2d | Yes | No | WinOnCD / Roxio; compressed C2D declined |
 | PDI | .pdi | Planned | No | Instant CD/DVD |
-| DMG | .dmg | Yes | No | Apple UDIF: zlib, bzip2, raw and zero chunks; ADC and lzfse declined |
+| DMG | .dmg | Yes | Yes | Apple UDIF: reads zlib, bzip2, raw and zero chunks, ADC and lzfse declined; writes zlib and zero |
 | Unknown containers | any | Yes | No | Signature scan finds an ISO 9660 volume at any offset |
 
-Read-only formats convert on save: open the image, then save it as ISO, BIN/CUE, CSO, gzip ISO, or zip.
+Read-only formats convert on save: open the image, then save it in any writable format.
 
 CD audio tracks (from cue sheets, Alcohol images and CHDs) show up as `TrackNN.wav`
 pseudo-files: extraction writes real WAV files, and a double-click plays the track.
