@@ -4991,8 +4991,11 @@ ZfPutMem ENDP
 ; no use for browsing, so it stays in the file untouched; the output is a plain
 ; 2352-byte raw image. Flagged frames get their sync pattern back, and MODE1
 ; frames their EDC and parity.
-ChdCdHunk PROC USES esi edi ebx offLo:DWORD, offHi:DWORD, cb:DWORD, isLzma:DWORD
+; cb is what the image keeps of this hunk (the last one may be partial);
+; fullCb is the stored hunk size, which the compressed streams always cover
+ChdCdHunk PROC USES esi edi ebx offLo:DWORD, offHi:DWORD, cb:DWORD, isLzma:DWORD, fullCb:DWORD
     LOCAL frames:DWORD
+    LOCAL fullOut:DWORD
     LOCAL eccBytes:DWORD
     LOCAL clBytes:DWORD
     LOCAL save0:DWORD
@@ -5001,15 +5004,22 @@ ChdCdHunk PROC USES esi edi ebx offLo:DWORD, offHi:DWORD, cb:DWORD, isLzma:DWORD
     LOCAL i:DWORD
     LOCAL hdrbuf[24]:BYTE
 
-    mov eax, cb
+    mov eax, fullCb
     xor edx, edx
-    mov ecx, 2352
+    mov ecx, 2448
     div ecx
     .IF edx != 0 || eax == 0
         mov g_zfErr, 1
         ret
     .ENDIF
     mov frames, eax
+    imul eax, 2352
+    mov fullOut, eax
+    .IF cb > eax
+        mov g_zfErr, 1
+        ret
+    .ENDIF
+    mov eax, frames
     mov ecx, eax
     add eax, 7
     shr eax, 3
@@ -5035,7 +5045,7 @@ ChdCdHunk PROC USES esi edi ebx offLo:DWORD, offHi:DWORD, cb:DWORD, isLzma:DWORD
     .ENDIF
     ; the whole hunk must stay in the buffer so sync patching can reach it
     mov eax, g_zfOutPos
-    add eax, cb
+    add eax, fullOut
     add eax, 1024
     .IF eax > ZF_OUTBUF
         invoke ZfOutFlush
@@ -5052,13 +5062,13 @@ ChdCdHunk PROC USES esi edi ebx offLo:DWORD, offHi:DWORD, cb:DWORD, isLzma:DWORD
     invoke ZfSetInput, baseLo, baseHi
     .IF isLzma != 0
         invoke LzmaStart
-        invoke LzmaDecode, cb
+        invoke LzmaDecode, fullOut
     .ELSE
         invoke ZfInflate
     .ENDIF
     mov eax, g_zfOutPos
     sub eax, save0
-    .IF eax != cb || g_zfErr != 0
+    .IF eax != fullOut || g_zfErr != 0
         mov g_zfErr, 1
         ret
     .ENDIF
@@ -5071,8 +5081,8 @@ ChdCdHunk PROC USES esi edi ebx offLo:DWORD, offHi:DWORD, cb:DWORD, isLzma:DWORD
         shr eax, 3
         and ecx, 7
         movzx eax, byte ptr hdrbuf[eax]
-        mov edx, 80h
-        shr edx, cl
+        mov edx, 1                      ; flags run from the low bit up
+        shl edx, cl
         test eax, edx
         .IF !ZERO?
             mov edi, g_zfOut
@@ -5090,6 +5100,9 @@ ChdCdHunk PROC USES esi edi ebx offLo:DWORD, offHi:DWORD, cb:DWORD, isLzma:DWORD
         .ENDIF
         inc i
     .ENDW
+    mov eax, save0                      ; keep only the frames the image has
+    add eax, cb
+    mov g_zfOutPos, eax
     ret
 ChdCdHunk ENDP
 
@@ -5204,6 +5217,7 @@ ChdExpandFile PROC USES esi edi ebx hIn:DWORD, pszDst:DWORD
     LOCAL hunkBytes:DWORD
     LOCAL hunkOut:DWORD
     LOCAL isCd:DWORD
+    LOCAL lastSelf:DWORD
     LOCAL nHunks:DWORD
     LOCAL mapLen:DWORD
     LOCAL dsLo:DWORD
@@ -5269,6 +5283,10 @@ ChdExpandFile PROC USES esi edi ebx hIn:DWORD, pszDst:DWORD
         .ENDIF
         inc ebx
     .ENDW
+    invoke BSwap32, dword ptr hdr[60]
+    .IF eax == 2448                         ; CD frames, whatever the codecs (none included)
+        mov isCd, 1
+    .ENDIF
     ; no deltas from a parent image
     mov ecx, 104
     xor eax, eax
@@ -5333,22 +5351,22 @@ ChdExpandFile PROC USES esi edi ebx hIn:DWORD, pszDst:DWORD
         mov remLo, eax
         mov remHi, edx
     .ENDIF
-    ; hunk count = ceil(total / hunk size)
+    ; hunk count = ceil(total / hunk size), both on the output scale for CD
     mov eax, totLo
     mov edx, totHi
-    add eax, hunkBytes
+    add eax, hunkOut
     adc edx, 0
     sub eax, 1
     sbb edx, 0
     mov ecx, eax                        ; 64/32 divide, quotient must fit 32 bits
     mov eax, edx
     xor edx, edx
-    div hunkBytes
+    div hunkOut
     .IF eax != 0
         jmp done
     .ENDIF
     mov eax, ecx
-    div hunkBytes
+    div hunkOut
     mov nHunks, eax
     .IF eax == 0 || eax > CHD_COUNTMAX
         jmp done
@@ -5477,7 +5495,7 @@ ChdExpandFile PROC USES esi edi ebx hIn:DWORD, pszDst:DWORD
                     mov lastComp, eax
                 .ENDIF
             .ENDIF
-            .IF eax > 5                 ; parent references and junk
+            .IF eax > 5 && eax != 9 && eax != 10    ; parent references and junk
                 jmp done
             .ENDIF
             mov esi, pMap
@@ -5490,6 +5508,7 @@ ChdExpandFile PROC USES esi edi ebx hIn:DWORD, pszDst:DWORD
             jmp done
         .ENDIF
         ; pass 2: lengths and offsets
+        mov lastSelf, 0
         mov eax, dsLo
         mov curLo, eax
         mov eax, dsHi
@@ -5512,6 +5531,7 @@ ChdExpandFile PROC USES esi edi ebx hIn:DWORD, pszDst:DWORD
                 mov dword ptr [esi + 12], ecx
                 add curLo, eax
                 adc curHi, 0
+                invoke ChBits, 16           ; the hunk's CRC-16, not checked
             .ELSEIF eax == 4
                 mov eax, hunkBytes
                 mov dword ptr [esi + 4], eax
@@ -5521,8 +5541,19 @@ ChdExpandFile PROC USES esi edi ebx hIn:DWORD, pszDst:DWORD
                 mov dword ptr [esi + 12], ecx
                 add curLo, eax
                 adc curHi, 0
-            .ELSE                       ; self reference: hunk number
+                invoke ChBits, 16
+            .ELSEIF eax == 5            ; self reference: hunk number
                 invoke ChBits, selfBits
+                mov lastSelf, eax
+                mov dword ptr [esi + 4], 0
+                mov dword ptr [esi + 8], eax
+                mov dword ptr [esi + 12], 0
+            .ELSE                       ; SELF_0 / SELF_1: the last reference, or the hunk after it
+                .IF eax == 10
+                    inc lastSelf
+                .ENDIF
+                mov eax, lastSelf
+                mov dword ptr [esi], 5
                 mov dword ptr [esi + 4], 0
                 mov dword ptr [esi + 8], eax
                 mov dword ptr [esi + 12], 0
@@ -5587,7 +5618,7 @@ ChdExpandFile PROC USES esi edi ebx hIn:DWORD, pszDst:DWORD
                 .IF fourcc == 7A6C6463h
                     inc eax
                 .ENDIF
-                invoke ChdCdHunk, dword ptr [esi + 8], dword ptr [esi + 12], thisCb, eax
+                invoke ChdCdHunk, dword ptr [esi + 8], dword ptr [esi + 12], thisCb, eax, hunkBytes
             .ELSEIF fourcc == 6C666463h ; cdfl: bare FLAC frames, byte-swapped samples
                 invoke ZfSetInput, dword ptr [esi + 8], dword ptr [esi + 12]
                 invoke FlacStart
