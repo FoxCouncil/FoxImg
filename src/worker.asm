@@ -47,14 +47,15 @@ WSTR szNrgSuffix, <.nrg>
 WSTR szZsoSuffix, <.zso>
 WSTR szChdSuffix, <.chd>
 WSTR szBz2Suffix, <.bz2>
+szNoSuffix      dw 0                    ; SAVE_XISO has no second pass
 WSTR szRawSuffix, <.raw>
 ; indexed by SAVE_* - 1: the suffix the second pass writes beside the image, and its writer
 g_saveSuffix    dd offset szGzSuffix, offset szZipSuffix, offset szCsoSuffix, offset szIszSuffix, offset szDaxSuffix
                 dd offset szJsoSuffix, offset szGczSuffix, offset szUifSuffix, offset szDaaSuffix, offset szDmgSuffix
-                dd offset szEcmSuffix, offset szNrgSuffix, offset szZsoSuffix, offset szChdSuffix, offset szBz2Suffix, offset szRawSuffix
+                dd offset szEcmSuffix, offset szNrgSuffix, offset szZsoSuffix, offset szChdSuffix, offset szBz2Suffix, offset szNoSuffix, offset szRawSuffix
 g_saveWriter    dd offset GzCompressFile, 0, offset CsoCompressFile, offset IszCompressFile, offset DaxCompressFile
                 dd offset JsoCompressFile, offset GczCompressFile, offset UifCompressFile, offset DaaCompressFile, offset DmgCompressFile
-                dd offset EcmWrapFile, offset NrgWrapFile, offset ZsoCompressFile, offset ChdWriteCdFile, offset BzCompressFile, offset RawWrapFile
+                dd offset EcmWrapFile, offset NrgWrapFile, offset ZsoCompressFile, offset ChdWriteCdFile, offset BzCompressFile, 0, offset RawWrapFile
 WSTR szIsoDot, <.iso>
 szPctFmt        dw '%','s','.','.','.',' ',' ','%','u','%','%',0
 szDotsFmt       dw '%','s','.','.','.',0
@@ -431,9 +432,13 @@ JobRunSave PROC USES esi ebx pszTmpPath:DWORD
     .IF pszTmpPath != 0
         invoke lstrcpynW, offset g_jobPath, pszTmpPath, MAX_PATH
     .ENDIF
-    invoke IsoWrite, offset g_jobPath
+    .IF g_saveKind == SAVE_XISO
+        invoke XdvdfsWrite, offset g_jobPath ; a filesystem of its own, straight from the tree
+    .ELSE
+        invoke IsoWrite, offset g_jobPath
+    .ENDIF
     mov result, eax
-    .IF eax != 0 && g_saveKind != SAVE_NONE
+    .IF eax != 0 && g_saveKind != SAVE_NONE && g_saveKind != SAVE_XISO
         ; second pass: pack the finished image beside itself, then take its place
         mov eax, g_saveKind
         dec eax

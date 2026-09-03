@@ -837,6 +837,7 @@ FindFirstFileW      PROTO :DWORD,:DWORD
 FindNextFileW       PROTO :DWORD,:DWORD
 FindClose           PROTO :DWORD
 FileTimeToLocalFileTime PROTO :DWORD,:DWORD
+GetSystemTimeAsFileTime PROTO :DWORD
 FileTimeToSystemTime PROTO :DWORD,:DWORD
 GetLocalTime        PROTO :DWORD
 lstrcatW            PROTO :DWORD,:DWORD
@@ -1135,6 +1136,14 @@ SecFlush            PROTO
 SecPutBytes         PROTO :DWORD,:DWORD
 EXTERNDEF g_pSec:DWORD
 EXTERNDEF g_fail:DWORD
+; isowrite.asm layout and file copying shared with xdvdwrite.asm
+WriteZeroSectors    PROTO :DWORD
+BuildDirArray       PROTO                       ; g_pDirs / g_nDirs breadth-first from g_pRootNode
+AssignFileExtents   PROTO :DWORD                ; pDir: wExtent per file from g_lba
+WriteFiles          PROTO :DWORD                ; pDir: file data, sector padded
+EXTERNDEF g_pDirs:DWORD
+EXTERNDEF g_nDirs:DWORD
+XdvdfsWrite         PROTO :DWORD                ; pszOutPath -> BOOL: the VFS as an Xbox XISO
 FID_DIR_FLAG        equ 02h
 FID_PARENT_DIR      equ 0Ah
 EXTERNDEF g_progDoneHi:DWORD
@@ -1229,7 +1238,8 @@ SAVE_NRG                equ 12
 SAVE_ZSO                equ 13
 SAVE_CHD                equ 14
 SAVE_BZ2                equ 15
-SAVE_RAW                equ 16              ; raw MODE1/2352 data for the cue, toc, ccd and mds descriptors
+SAVE_XISO               equ 16              ; a filesystem writer: no ISO first, no second pass
+SAVE_RAW                equ 17              ; raw MODE1/2352 data for the cue, toc, ccd and mds descriptors
 
 ; ---------------------------------------------------------------------------
 ; Optical containers (container.asm): NRG, MDS/MDF, CCD/IMG, GDI, TOC, generic scan

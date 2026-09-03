@@ -12,6 +12,7 @@ g_saveKind  dd 0
 g_saveFilter dd 0                       ; nFilterIndex from the last save dialog
 g_saveRaw   dd 0                        ; cue sheet says MODE1/2352
 g_cliRaw    dd 0                        ; /raw on the command line
+g_cliXiso   dd 0                        ; /xiso
 
 WSTR szClassName, <FoxImgMain>
 WSTR szTitle, <FoxImg>
@@ -48,6 +49,7 @@ WSTR szExtNrgDot, <.nrg>
 WSTR szExtZsoDot, <.zso>
 WSTR szExtChdDot, <.chd>
 WSTR szExtBz2Dot, <.bz2>
+WSTR szExtXisoDot, <.xiso>
 WSTR szExtMdsDot, <.mds>
 WSTR szExtMdfDot, <.mdf>
 WSTR szExtIszDot, <.isz>
@@ -60,9 +62,10 @@ WSTR szExtDmgDot, <.dmg>
 ; save extensions in SAVE_* order: the index plus one is the kind
 g_saveExts  dd offset szExtGzDot, offset szExtZipDot, offset szExtCsoDot, offset szExtIszDot, offset szExtDaxDot
             dd offset szExtJsoDot, offset szExtGczDot, offset szExtUifDot, offset szExtDaaDot, offset szExtDmgDot
-            dd offset szExtEcmDot, offset szExtNrgDot, offset szExtZsoDot, offset szExtChdDot, offset szExtBz2Dot, 0
+            dd offset szExtEcmDot, offset szExtNrgDot, offset szExtZsoDot, offset szExtChdDot, offset szExtBz2Dot, offset szExtXisoDot, 0
 WSTR szTmpSuffix, <.tmp>
 WSTR szSwRaw, </raw>
+WSTR szSwXiso, </xiso>
 szCliOk     db 'FoxImg: wrote ', 0
 szCliFail   db 'FoxImg: convert failed', 13, 10, 0
 szCrLf      db 13, 10, 0
@@ -115,6 +118,8 @@ szFilterSave LABEL WORD
     dw '*','.','c','h','d',0
     dw 'b','z','i','p','2',' ','I','S','O',' ','(','*','.','i','s','o','.','b','z','2',')',0
     dw '*','.','b','z','2',0
+    dw 'X','b','o','x',' ','X','I','S','O',' ','(','*','.','i','s','o',')',0
+    dw '*','.','i','s','o',0
     dw 0
 szFilterAll LABEL WORD
     dw 'A','l','l',' ','F','i','l','e','s',' ','(','*','.','*',')',0
@@ -128,6 +133,7 @@ szCueRawFmt dw 'F','I','L','E',' ','"','%','s','"',' ','B','I','N','A','R','Y',1
             dw ' ',' ','T','R','A','C','K',' ','0','1',' ','M','O','D','E','1','/','2','3','5','2',13,10
             dw ' ',' ',' ',' ','I','N','D','E','X',' ','0','1',' ','0','0',':','0','0',':','0','0',13,10,0
 SAVE_FILTER_RAW equ 4                   ; the "BIN/CUE raw" entry of szFilterSave
+SAVE_FILTER_XISO equ 23                 ; the "Xbox XISO" entry: the same .iso extension, another filesystem
 WriteAllFile PROTO :DWORD,:DWORD,:DWORD
 DESC_NONE   equ 0
 DESC_CUE    equ 1
@@ -538,6 +544,9 @@ SaveClassify PROC pszTarget:DWORD
             invoke lstrcpynW, offset g_saveData, addr szTarget, MAX_PATH
         .ENDIF
     .ENDIF
+    .IF g_saveKind == SAVE_NONE && g_saveDesc == DESC_NONE && g_saveFilter == SAVE_FILTER_XISO
+        mov g_saveKind, SAVE_XISO
+    .ENDIF
     .IF g_saveDesc != DESC_NONE && g_saveFilter == SAVE_FILTER_RAW
         mov g_saveRaw, TRUE                 ; second pass turns the 2048 image into raw sectors
         mov g_saveKind, SAVE_RAW
@@ -567,6 +576,9 @@ CliConvert PROC
         invoke BootParse
         .IF g_cliRaw != 0
             mov g_saveFilter, SAVE_FILTER_RAW
+        .ENDIF
+        .IF g_cliXiso != 0
+            mov g_saveFilter, SAVE_FILTER_XISO
         .ENDIF
         invoke SaveClassify, offset g_cliOut
         invoke JobRunSave, offset g_saveTmp
@@ -1055,6 +1067,10 @@ ParseCommandLine PROC USES esi
             invoke lstrcmpiW, addr szArg, offset szSwRaw
             .IF eax == 0
                 mov g_cliRaw, TRUE
+            .ENDIF
+            invoke lstrcmpiW, addr szArg, offset szSwXiso
+            .IF eax == 0
+                mov g_cliXiso, TRUE
             .ENDIF
         .ELSE
             invoke lstrcpynW, offset g_cliOut, addr szArg, MAX_PATH

@@ -28,6 +28,7 @@ The program is one small executable with no runtime dependencies.
     FoxImg image.iso                  open an image
     FoxImg image.iso out.isz          convert without a window; the format follows the extension
     FoxImg image.iso out.cue /raw     BIN/CUE with MODE1/2352 raw sectors
+    FoxImg image.iso out.iso /xiso    an Xbox XISO instead of ISO 9660
 
 The convert returns exit code 0 on success and prints one line to the console it was started from.
 
@@ -49,7 +50,7 @@ The convert returns exit code 0 on success and prints one line to the console it
 | Dreamcast | .gdi | Yes | No | Data track with its 45000 block base |
 | cdrdao | .toc | Yes | Yes | DATAFILE with track mode; writes MODE1_RAW |
 | ECM | .ecm | Yes | Yes | Decoded once to a temporary raw image with the parity restored; writes MODE1 records |
-| Xbox / Xbox 360 | .iso (XDVDFS) | Yes | No | XISO and all redump partition offsets |
+| Xbox / Xbox 360 | .iso (XDVDFS) | Yes | Yes | Reads XISO and all redump partition offsets; writes XISO (the "Xbox XISO" save type, .xiso, or /xiso) |
 | 3DO | .iso .cue (Opera) | Yes | No | Volume label, directory chains, copies |
 | CD-i | .iso .bin | Yes | No | Green Book descriptors beside CD001 |
 | gzip | .iso.gz .gz | Yes | Yes | Any image inside; Save As writes a gzip ISO |
