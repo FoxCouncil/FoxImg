@@ -51,7 +51,7 @@ The convert returns exit code 0 on success and prints one line to the console it
 | cdrdao | .toc | Yes | Yes | DATAFILE with track mode; writes MODE1_RAW |
 | ECM | .ecm | Yes | Yes | Decoded once to a temporary raw image with the parity restored; writes MODE1 records |
 | Xbox / Xbox 360 | .iso (XDVDFS) | Yes | Yes | Reads XISO and all redump partition offsets; writes XISO (the "Xbox XISO" save type, .xiso, or /xiso) |
-| 3DO | .iso .cue (Opera) | Yes | No | Volume label, directory chains, copies |
+| 3DO | .iso .cue .3do (Opera) | Yes | Yes | Reads the label, directory chains and copies; writes one copy of everything as .3do |
 | CD-i | .iso .bin | Yes | No | Green Book descriptors beside CD001 |
 | gzip | .iso.gz .gz | Yes | Yes | Any image inside; Save As writes a gzip ISO |
 | bzip2 | .iso.bz2 .bz2 | Yes | Yes | Any image inside; Save As writes a bzip2 ISO |

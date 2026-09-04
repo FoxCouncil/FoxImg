@@ -83,17 +83,16 @@ OwWriteDir PROC USES esi edi ebx pDir:DWORD
         mov eax, blk
         inc eax
         .IF eax < blocks
-            add eax, g_lba
+            mov eax, g_lba                  ; g_lba is this block; the next one follows it
+            inc eax
         .ELSE
             mov eax, -1
         .ENDIF
         invoke OwBE32, edi, eax
-        mov eax, blk
-        .IF eax == 0
+        mov eax, g_lba
+        dec eax
+        .IF blk == 0
             mov eax, -1
-        .ELSE
-            add eax, g_lba
-            dec eax
         .ENDIF
         lea ecx, [edi + 4]
         invoke OwBE32, ecx, eax
