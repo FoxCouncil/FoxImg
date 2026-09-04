@@ -27,6 +27,8 @@ g_totalSectors  dd 0
 g_fail          dd 0
 
 szCD001         db 'CD001'
+szCDI           db 'CD-I '
+g_isoCdi        dd 0            ; the descriptors carry the Green Book identifier
 szAppId         db 'FOXIMG'
 szZeroDate      db '0000000000000000', 0
 szDateFmtW      dw '%','0','4','u','%','0','2','u','%','0','2','u','%','0','2','u','%','0','2','u','%','0','2','u','0','0',0
@@ -758,7 +760,11 @@ WriteVolumeDescriptor PROC USES esi edi ebx bJoliet:DWORD
         mov byte ptr [edi], ISO_VD_SUPPLEMENTARY
     .ENDIF
     lea eax, [edi + 1]
-    invoke RtlMoveMemory, eax, offset szCD001, 5
+    mov ecx, offset szCD001
+    .IF g_isoCdi != 0
+        mov ecx, offset szCDI
+    .ENDIF
+    invoke RtlMoveMemory, eax, ecx, 5
     mov byte ptr [edi + 6], 1
 
     mov esi, g_pRootNode
@@ -914,7 +920,11 @@ WriteTerminator PROC USES edi
     mov edi, g_pSec
     mov byte ptr [edi], ISO_VD_TERMINATOR
     lea eax, [edi + 1]
-    invoke RtlMoveMemory, eax, offset szCD001, 5
+    mov ecx, offset szCD001
+    .IF g_isoCdi != 0
+        mov ecx, offset szCDI
+    .ENDIF
+    invoke RtlMoveMemory, eax, ecx, 5
     mov byte ptr [edi + 6], 1
     invoke SecWrite
     ret

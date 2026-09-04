@@ -1151,6 +1151,7 @@ EXTERNDEF g_xwCount:DWORD
 GcmWrite            PROTO :DWORD                ; pszOutPath -> BOOL: the VFS as a GameCube disc
 RvzWrapFile         PROTO :DWORD,:DWORD        ; a GCM file -> uncompressed RVZ
 OperaWrite          PROTO :DWORD                ; pszOutPath -> BOOL: the VFS as a 3DO Opera disc
+EXTERNDEF g_isoCdi:DWORD                        ; IsoWrite stamps "CD-I " (Green Book) when set
 FID_DIR_FLAG        equ 02h
 FID_PARENT_DIR      equ 0Ah
 EXTERNDEF g_progDoneHi:DWORD
@@ -1249,7 +1250,8 @@ SAVE_XISO               equ 16              ; filesystem writers: no ISO first, 
 SAVE_GCM                equ 17
 SAVE_RVZ                equ 18              ; a GCM first, then wrapped
 SAVE_OPERA              equ 19              ; a filesystem writer
-SAVE_RAW                equ 20              ; raw MODE1/2352 data for the cue, toc, ccd and mds descriptors
+SAVE_CDI                equ 20              ; IsoWrite under a CD-I label
+SAVE_RAW                equ 21              ; raw MODE1/2352 data for the cue, toc, ccd and mds descriptors
 
 ; ---------------------------------------------------------------------------
 ; Optical containers (container.asm): NRG, MDS/MDF, CCD/IMG, GDI, TOC, generic scan

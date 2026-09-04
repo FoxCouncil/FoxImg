@@ -29,6 +29,7 @@ The program is one small executable with no runtime dependencies.
     FoxImg image.iso out.isz          convert without a window; the format follows the extension
     FoxImg image.iso out.cue /raw     BIN/CUE with MODE1/2352 raw sectors
     FoxImg image.iso out.iso /xiso    an Xbox XISO instead of ISO 9660
+    FoxImg image.iso out.iso /cdi     ISO 9660 under a CD-i (Green Book) label
 
 The convert returns exit code 0 on success and prints one line to the console it was started from.
 
@@ -52,7 +53,7 @@ The convert returns exit code 0 on success and prints one line to the console it
 | ECM | .ecm | Yes | Yes | Decoded once to a temporary raw image with the parity restored; writes MODE1 records |
 | Xbox / Xbox 360 | .iso (XDVDFS) | Yes | Yes | Reads XISO and all redump partition offsets; writes XISO (the "Xbox XISO" save type, .xiso, or /xiso) |
 | 3DO | .iso .cue .3do (Opera) | Yes | Yes | Reads the label, directory chains and copies; writes one copy of everything as .3do |
-| CD-i | .iso .bin | Yes | No | Green Book descriptors beside CD001 |
+| CD-i | .iso .bin | Yes | Yes | Reads Green Book descriptors beside CD001; writes the ISO 9660 layout under a CD-I label (the "CD-i disc" save type, .cd-i, or /cdi), 2048-byte sectors, no XA attributes |
 | gzip | .iso.gz .gz | Yes | Yes | Any image inside; Save As writes a gzip ISO |
 | bzip2 | .iso.bz2 .bz2 | Yes | Yes | Any image inside; Save As writes a bzip2 ISO |
 | zip | .zip | Yes | Yes | Reads the largest stored or deflated entry, CRC verified; Save As writes one deflated entry, zip64 past 4 GB |
