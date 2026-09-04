@@ -50,7 +50,7 @@ g_ctExtList     dd offset szExtIso, offset szExtImg, offset szExtBin, offset szE
                 dd offset szExtGz, offset szExtZip, offset szExtCso, offset szExtCiso, offset szExtChd, offset szExtUif
                 dd offset szExtDmg, offset szExtPbp, offset szExtBz2, offset szExtRvz, offset szExtGcz, offset szExtDax
                 dd offset szExtZso, offset szExtJso, offset szExtIsz, offset szExtDaa, offset szExtB5t, offset szExtB6t
-                dd offset szExtC2d, offset szExtMdx, offset szExtGcm
+                dd offset szExtC2d, offset szExtMdx, offset szExtGcm, offset szExtImd, offset szExtIma
                 dd 0
 
 .code
@@ -1150,6 +1150,8 @@ WSTR szCtBz2, <bzip2>
 WSTR szExtBz2, <.bz2>
 WSTR szCtRvz, <RVZ>
 WSTR szExtRvz, <.rvz>
+WSTR szExtImd, <.imd>
+WSTR szExtIma, <.ima>
 WSTR szExtIso, <.iso>
 WSTR szExtBin, <.bin>
 WSTR szExtGcm, <.gcm>
@@ -1565,6 +1567,7 @@ g_ctExpTable    dd offset szExtGz,   offset GzExpandFile,  offset szCtGz,  0
                 dd offset szExtPbp,  offset PbpExpandFile, offset szCtPbp, 0
                 dd offset szExtBz2,  offset BzExpandFile,  offset szCtBz2, 0
                 dd offset szExtRvz,  offset RvzExpandFile, offset szCtRvz, 2048
+                dd offset szExtImd,  offset ImdExpandFile, offset szCtImd, 2048
                 dd 0
 
 .code

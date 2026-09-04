@@ -75,6 +75,8 @@ The convert returns exit code 0 on success and prints one line to the console it
 | C2D | .c2d | Yes | No | WinOnCD / Roxio; compressed C2D declined |
 | PDI | .pdi | Planned | No | Instant CD/DVD |
 | DMG | .dmg | Yes | Yes | Apple UDIF: reads zlib, bzip2, raw and zero chunks, ADC and lzfse declined; writes zlib and zero |
+| Floppy: FAT12 / FAT16 | .img .ima | Yes | No | Raw floppy and small disk images: BIOS parameter block, long names, fragmented files |
+| ImageDisk | .imd | Yes | No | Track records with sector maps, stored, filled and absent sectors; flattened, then opened as FAT |
 | Unknown containers | any | Yes | No | Signature scan finds an ISO 9660 volume at any offset |
 
 Read-only formats convert on save: open the image, then save it in any writable format.

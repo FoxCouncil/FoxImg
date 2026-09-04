@@ -326,6 +326,10 @@ VfsBuildFromIso PROC USES esi
         invoke GcBuild, esi
         mov g_bModified, FALSE
         ret
+    .ELSEIF g_bFat != 0
+        invoke FatBuild, esi
+        mov g_bModified, FALSE
+        ret
     .ELSEIF g_bAudioOnly != 0
         invoke VfsAddCdTracks, esi          ; nothing but audio tracks on this disc
         mov g_bModified, FALSE
@@ -571,7 +575,16 @@ VfsCopyData PROC USES esi ebx pNode:DWORD, hOut:DWORD
             mov ecx, [esi].NODE.nExtList
             .WHILE ecx != 0
                 push ecx
-                invoke IsoCopyExtent, [ebx].EXTENT.lba, [ebx].EXTENT.cb, hOut
+                .IF [esi].NODE.nflags & NF_SEC512
+                    mov eax, [ebx].EXTENT.lba  ; 512-byte units: block and remainder
+                    mov edx, eax
+                    shr eax, 2
+                    and edx, 3
+                    shl edx, 9
+                    invoke IsoCopyBytes, eax, edx, [ebx].EXTENT.cb, hOut
+                .ELSE
+                    invoke IsoCopyExtent, [ebx].EXTENT.lba, [ebx].EXTENT.cb, hOut
+                .ENDIF
                 pop ecx
                 .IF eax == 0
                     ret

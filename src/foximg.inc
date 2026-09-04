@@ -774,6 +774,7 @@ NF_HOST                 equ 4       ; data lives in a host file (pszHost)
 NF_MEM                  equ 8       ; data is a heap block (pszHost points at it) - UDF embedded files
 NF_UDFONLY              equ 16      ; over 4 GB: written to the UDF half only
 NF_CDA                  equ 32      ; CD audio track: raw PCM in the container's data file, served as WAV
+NF_SEC512               equ 64      ; the extent list counts 512-byte sectors (FAT)
 
 ; Extent list entry for multi-extent files (absolute block, bytes)
 EXTENT STRUCT
@@ -1149,6 +1150,14 @@ XwName              PROTO :DWORD,:DWORD         ; pNode, pDst (255) -> ASCII len
 EXTERNDEF g_xwSorted:DWORD
 EXTERNDEF g_xwCount:DWORD
 GcmWrite            PROTO :DWORD                ; pszOutPath -> BOOL: the VFS as a GameCube disc
+; floppy.asm
+ImdExpandFile       PROTO :DWORD,:DWORD        ; hIn, pszDst -> BOOL: ImageDisk to a flat image
+FatDetect           PROTO                       ; a FAT12/16 BIOS parameter block at byte 0
+FatBuild            PROTO :DWORD                ; pRoot -> BOOL
+FatClose            PROTO
+EXTERNDEF g_bFat:DWORD
+EXTERNDEF szCtImd:WORD
+VfsSetDate          PROTO :DWORD,:DWORD         ; pNode, pSystemTime
 RvzWrapFile         PROTO :DWORD,:DWORD        ; a GCM file -> uncompressed RVZ
 OperaWrite          PROTO :DWORD                ; pszOutPath -> BOOL: the VFS as a 3DO Opera disc
 EXTERNDEF g_isoCdi:DWORD                        ; IsoWrite stamps "CD-I " (Green Book) when set
@@ -1189,6 +1198,7 @@ ZfPutMem            PROTO :DWORD,:DWORD        ; pSrc, cb
 ZfPutZeros          PROTO :DWORD               ; cb
 ZfBeginOut          PROTO :DWORD,:DWORD,:DWORD,:DWORD  ; pszDst, hIn, cbLo, cbHi -> hOut or INVALID_HANDLE_VALUE
 ZfOutFinal          PROTO
+ZfCheckTotal        PROTO :DWORD,:DWORD        ; expLo, expHi -> BOOL: at least that much came out
 ZfExpandFree        PROTO
 ZfClosePair         PROTO :DWORD,:DWORD,:DWORD  ; ok, hIn, pszDst -> ok (closes the session's output)
 ZfRunExpander       PROTO :DWORD,:DWORD,:DWORD  ; pszSrc, pszDst, body(hIn, pszDst) -> BOOL

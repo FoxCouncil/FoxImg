@@ -150,6 +150,7 @@ IsoClose PROC
     invoke XdvdfsClose
     invoke OperaClose
     invoke GcClose
+    invoke FatClose
     mov g_bAudioOnly, 0
     mov g_bCdi, 0
     .IF g_pView != 0
@@ -390,6 +391,9 @@ vd_done:
         .ENDIF
         .IF eax == 0
             invoke GcDetect
+        .ENDIF
+        .IF eax == 0
+            invoke FatDetect                ; floppy and hard disk images
         .ENDIF
         .IF eax == 0 && g_ctNumTracks != 0
             mov g_bAudioOnly, TRUE          ; audio tracks but no filesystem: still worth opening
