@@ -19,7 +19,8 @@
 ; Only what a GameCube disc needs is here: raw data, no partitions. Wii images
 ; keep their filesystem inside AES-encrypted partitions and are declined, as
 ; every other encrypted image is. Only Zstandard compression is taken; bzip2
-; and LZMA groups could follow, the codecs exist. SHA-1 hashes over the headers
+; and LZMA groups could follow, the codecs exist; uncompressed files (type 0)
+; are taken as they are. SHA-1 hashes over the headers
 ; are not verified.
 include foximg.inc
 
@@ -308,6 +309,7 @@ RvzExpandFile PROC USES esi edi ebx hIn:DWORD, pszDst:DWORD
     LOCAL skipNow:DWORD
     LOCAL tmp:DWORD
     LOCAL ok:DWORD
+    LOCAL noComp:DWORD
     mov ok, FALSE
     mov pC, 0
     mov pD, 0
@@ -335,8 +337,11 @@ RvzExpandFile PROC USES esi edi ebx hIn:DWORD, pszDst:DWORD
     .IF eax != 1
         jmp done
     .ENDIF
-    invoke BE32, addr h2[4]          ; compression: 5 is Zstandard
-    .IF eax != 5
+    invoke BE32, addr h2[4]          ; compression: 5 is Zstandard, 0 none
+    mov noComp, 0
+    .IF eax == 0
+        mov noComp, 1
+    .ELSEIF eax != 5
         jmp done
     .ENDIF
     invoke BE32, addr h2[0Ch]
@@ -433,9 +438,17 @@ RvzExpandFile PROC USES esi edi ebx hIn:DWORD, pszDst:DWORD
     .IF eax != rawCb
         jmp done
     .ENDIF
-    invoke ZsDecode, pC, rawCb, pRaw, tmp
-    .IF eax != tmp
-        jmp done
+    .IF noComp != 0
+        mov eax, rawCb
+        .IF eax != tmp
+            jmp done
+        .ENDIF
+        invoke RtlMoveMemory, pRaw, pC, tmp
+    .ELSE
+        invoke ZsDecode, pC, rawCb, pRaw, tmp
+        .IF eax != tmp
+            jmp done
+        .ENDIF
     .ENDIF
     invoke FileReadAt, hIn, grpOffLo, grpOffHi, pC, grpCb
     .IF eax != grpCb
@@ -445,9 +458,17 @@ RvzExpandFile PROC USES esi edi ebx hIn:DWORD, pszDst:DWORD
     mov ecx, RVZ_GRP_ENTRY
     mul ecx
     mov tmp, eax
-    invoke ZsDecode, pC, grpCb, pGrp, tmp
-    .IF eax != tmp
-        jmp done
+    .IF noComp != 0
+        mov eax, grpCb
+        .IF eax != tmp
+            jmp done
+        .ENDIF
+        invoke RtlMoveMemory, pGrp, pC, tmp
+    .ELSE
+        invoke ZsDecode, pC, grpCb, pGrp, tmp
+        .IF eax != tmp
+            jmp done
+        .ENDIF
     .ENDIF
 
     ; --- output: the disc header from header 2, then the raw data entries ---

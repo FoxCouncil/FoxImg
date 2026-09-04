@@ -1149,6 +1149,7 @@ XwName              PROTO :DWORD,:DWORD         ; pNode, pDst (255) -> ASCII len
 EXTERNDEF g_xwSorted:DWORD
 EXTERNDEF g_xwCount:DWORD
 GcmWrite            PROTO :DWORD                ; pszOutPath -> BOOL: the VFS as a GameCube disc
+RvzWrapFile         PROTO :DWORD,:DWORD        ; a GCM file -> uncompressed RVZ
 FID_DIR_FLAG        equ 02h
 FID_PARENT_DIR      equ 0Ah
 EXTERNDEF g_progDoneHi:DWORD
@@ -1245,7 +1246,8 @@ SAVE_CHD                equ 14
 SAVE_BZ2                equ 15
 SAVE_XISO               equ 16              ; filesystem writers: no ISO first, no second pass
 SAVE_GCM                equ 17
-SAVE_RAW                equ 18              ; raw MODE1/2352 data for the cue, toc, ccd and mds descriptors
+SAVE_RVZ                equ 18              ; a GCM first, then wrapped
+SAVE_RAW                equ 19              ; raw MODE1/2352 data for the cue, toc, ccd and mds descriptors
 
 ; ---------------------------------------------------------------------------
 ; Optical containers (container.asm): NRG, MDS/MDF, CCD/IMG, GDI, TOC, generic scan

@@ -1654,6 +1654,7 @@ CHD_CD_PLAIN    equ 32768               ; chunk buffer offsets: the plain hunk, 
 CHD_CD_IN       equ 65536
 CHD_WR_HDR      equ 124
 CHD_RLE_SMALL   equ 7
+RVZ_MAGIC_W     equ 015A5652h           ; "RVZ" 01 as a little-endian dword
 BePut           PROTO :DWORD,:DWORD     ; the bzip2 encoder's bit writer, further down
 
 .data
@@ -3106,5 +3107,282 @@ done:
     invoke WrEnd, ok, hIn, hOut, pszDst
     ret
 BzCompressFile ENDP
+
+; ---------------------------------------------------------------------------
+; RVZ (Dolphin) writer: the disc as one raw data entry of uncompressed
+; groups (compression 0), each group a packed stream of a single run. All
+; big-endian. Header 1: magic, version, compatible version, header 2 size
+; and hash, disc and file sizes, its own hash over the first 0x34 bytes.
+; Header 2: disc type 1, compression 0, chunk size, the first 0x80 disc
+; bytes, no partitions, one raw data entry, the group table. Zero groups
+; are stored as nothing. Hashing is bcrypt's.
+; ---------------------------------------------------------------------------
+RVZ_W_CHUNK     equ 100000h             ; 1 MiB groups: the chunk buffer's size
+RVZ_W_H1        equ 48h
+RVZ_W_H2        equ 0DCh
+RVZ_W_RAW       equ 18h
+RVZ_W_GRP       equ 0Ch
+
+.data
+szBcSha1R       dw 'S','H','A','1',0
+.code
+
+RwBE32 PROC pDst:DWORD, v:DWORD
+    mov eax, v
+    bswap eax
+    mov ecx, pDst
+    mov dword ptr [ecx], eax
+    ret
+RwBE32 ENDP
+
+; SHA-1 of cb bytes at pData into pOut (20 bytes); TRUE on success
+RwSha1 PROC hAlg:DWORD, pData:DWORD, cb:DWORD, pOut:DWORD
+    LOCAL hHash:DWORD
+    invoke BCryptCreateHash, hAlg, addr hHash, NULL, 0, NULL, 0, 0
+    .IF eax != 0
+        xor eax, eax
+        ret
+    .ENDIF
+    invoke BCryptHashData, hHash, pData, cb, 0
+    invoke BCryptFinishHash, hHash, pOut, 20, 0
+    push eax
+    invoke BCryptDestroyHash, hHash
+    pop eax
+    .IF eax != 0
+        xor eax, eax
+        ret
+    .ENDIF
+    mov eax, TRUE
+    ret
+RwSha1 ENDP
+
+RvzWrapFile PROC USES esi edi ebx pszSrc:DWORD, pszDst:DWORD
+    LOCAL hIn:DWORD
+    LOCAL hOut:DWORD
+    LOCAL ok:DWORD
+    LOCAL hAlg:DWORD
+    LOCAL off[2]:DWORD
+    LOCAL nGrp:DWORD
+    LOCAL pGrp:DWORD                        ; the group table
+    LOCAL grpCb:DWORD
+    LOCAL rawOff:DWORD                      ; the raw data entry's file offset
+    LOCAL grpOff:DWORD
+    LOCAL posLo:DWORD
+    LOCAL posHi:DWORD
+    LOCAL i:DWORD
+    LOCAL n:DWORD
+    LOCAL h1[RVZ_W_H1]:BYTE
+    LOCAL h2[RVZ_W_H2]:BYTE
+    LOCAL rawEnt[RVZ_W_RAW]:BYTE
+    LOCAL runHdr:DWORD
+    mov ok, FALSE
+    mov hAlg, 0
+    mov pGrp, 0
+    invoke WrBegin, pszSrc, pszDst
+    .IF eax == 0
+        ret
+    .ENDIF
+    mov hIn, eax
+    mov hOut, edx
+    .IF g_dfSizeHi == 0 && g_dfSizeLo < 80h
+        jmp done                            ; not even a disc head
+    .ENDIF
+    mov eax, g_dfSizeLo
+    mov edx, g_dfSizeHi
+    add eax, RVZ_W_CHUNK - 1
+    adc edx, 0
+    shrd eax, edx, 20
+    shr edx, 20
+    .IF edx != 0 || eax > 100000h
+        jmp done
+    .ENDIF
+    mov nGrp, eax
+    imul eax, RVZ_W_GRP
+    mov grpCb, eax
+    invoke VfsAlloc, eax
+    mov pGrp, eax
+    .IF eax == 0
+        jmp done
+    .ENDIF
+    invoke BCryptOpenAlgorithmProvider, addr hAlg, offset szBcSha1R, NULL, 0
+    .IF eax != 0
+        jmp done
+    .ENDIF
+    ; header 2 starts clean; the first 0x80 disc bytes go into it
+    lea edi, h2
+    xor eax, eax
+    mov ecx, RVZ_W_H2 / 4
+    rep stosd
+    invoke FileReadAt, hIn, 0, 0, addr h2[10h], 80h
+    ; placeholders for both headers, then the raw data entry and the group
+    ; table (both stored plain), then the groups
+    lea edi, h1
+    xor eax, eax
+    mov ecx, RVZ_W_H1 / 4
+    rep stosd
+    invoke DfWriteRaw, addr h1, RVZ_W_H1
+    invoke DfWriteRaw, addr h1, RVZ_W_H1
+    invoke DfWriteRaw, addr h1, RVZ_W_H1
+    invoke DfWriteRaw, addr h1, RVZ_W_H2 - 2 * RVZ_W_H1   ; 0x48 + 0xDC = 0x124
+    mov rawOff, RVZ_W_H1 + RVZ_W_H2
+    lea edi, rawEnt
+    xor eax, eax
+    mov ecx, RVZ_W_RAW / 4
+    rep stosd
+    ; the entry begins at 0x80: the disc head sits in header 2 and the
+    ; reader skips it from group 0, whose data still starts at 0
+    lea eax, rawEnt[4]
+    invoke RwBE32, eax, 80h                 ; raw_data_off, u64
+    mov eax, g_dfSizeLo
+    sub eax, 80h
+    mov posLo, eax                          ; (posLo, posHi: scratch for the size until the layout starts)
+    mov eax, g_dfSizeHi
+    sbb eax, 0
+    mov posHi, eax
+    lea eax, rawEnt[8]
+    invoke RwBE32, eax, posHi               ; raw_data_size, u64
+    lea eax, rawEnt[12]
+    invoke RwBE32, eax, posLo
+    lea eax, rawEnt[20]
+    invoke RwBE32, eax, nGrp                ; group_index 0, num_groups
+    invoke DfWriteRaw, addr rawEnt, RVZ_W_RAW
+    mov eax, rawOff
+    add eax, RVZ_W_RAW
+    mov grpOff, eax
+    invoke DfWriteRaw, pGrp, grpCb          ; placeholder table
+    mov eax, grpOff
+    add eax, grpCb
+    add eax, 3
+    and eax, -4
+    mov posLo, eax
+    mov posHi, 0
+    mov ecx, eax
+    sub ecx, grpOff
+    sub ecx, grpCb
+    .IF ecx != 0
+        invoke DfWriteRaw, addr h1, ecx     ; up to three zero bytes to a 4-byte boundary
+    .ENDIF
+    mov off[0], 0
+    mov off[4], 0
+    mov i, 0
+    .WHILE g_dfErr == 0
+        mov eax, i
+        .BREAK .IF eax >= nGrp
+        invoke WrReadBlock, hIn, addr off, RVZ_W_CHUNK
+        .IF eax == 0
+            mov g_dfErr, 1
+            .BREAK
+        .ENDIF
+        mov n, eax
+        mov esi, pGrp
+        mov ecx, i
+        lea ecx, [ecx + ecx * 2]
+        shl ecx, 2
+        add esi, ecx
+        invoke WrIsZero, n
+        .IF eax != 0
+            mov dword ptr [esi], 0          ; nothing stored: the reader zero-fills
+            mov dword ptr [esi + 4], 0
+            mov dword ptr [esi + 8], 0
+        .ELSE
+            mov eax, posLo
+            shr eax, 2
+            invoke RwBE32, esi, eax         ; data offset in 4-byte units
+            mov eax, n
+            add eax, 4
+            lea ecx, [esi + 4]
+            invoke RwBE32, ecx, eax         ; data size, top bit clear: not compressed
+            mov eax, n
+            add eax, 4
+            lea ecx, [esi + 8]
+            invoke RwBE32, ecx, eax         ; packed size: one run header and the bytes
+            invoke RwBE32, addr runHdr, n
+            invoke DfWriteRaw, addr runHdr, 4
+            invoke DfWriteRaw, g_dfChunkPtr, n
+            mov eax, n
+            add eax, 4
+            add posLo, eax
+            mov eax, posLo
+            neg eax
+            and eax, 3
+            .IF eax != 0
+                invoke DfWriteRaw, addr h1, eax
+                mov eax, posLo
+                add eax, 3
+                and eax, -4
+                mov posLo, eax
+            .ENDIF
+        .ENDIF
+        inc i
+    .ENDW
+    .IF g_dfErr != 0
+        jmp done
+    .ENDIF
+    ; the group table in place, then header 2, then header 1
+    invoke SetFilePointerEx, hOut, grpOff, 0, NULL, FILE_BEGIN
+    invoke DfWriteRaw, pGrp, grpCb
+    lea edi, h2
+    invoke RwBE32, edi, 1                   ; GameCube
+    lea eax, [edi + 4]
+    invoke RwBE32, eax, 0                   ; no compression
+    lea eax, [edi + 8]
+    invoke RwBE32, eax, 0                   ; level
+    lea eax, [edi + 0Ch]
+    invoke RwBE32, eax, RVZ_W_CHUNK
+    lea eax, [edi + 90h]
+    invoke RwBE32, eax, 0                   ; partitions
+    lea eax, [edi + 94h]
+    invoke RwBE32, eax, 54h                 ; partition entry size, as Dolphin writes it
+    lea eax, [edi + 0A0h]
+    invoke RwSha1, hAlg, edi, 0, eax        ; hash of no partition entries
+    lea eax, [edi + 0B4h]
+    invoke RwBE32, eax, 1                   ; one raw data entry
+    lea eax, [edi + 0BCh]
+    invoke RwBE32, eax, rawOff
+    lea eax, [edi + 0C0h]
+    invoke RwBE32, eax, RVZ_W_RAW
+    lea eax, [edi + 0C4h]
+    invoke RwBE32, eax, nGrp
+    lea eax, [edi + 0CCh]
+    invoke RwBE32, eax, grpOff
+    lea eax, [edi + 0D0h]
+    invoke RwBE32, eax, grpCb
+    invoke SetFilePointerEx, hOut, RVZ_W_H1, 0, NULL, FILE_BEGIN
+    invoke DfWriteRaw, addr h2, RVZ_W_H2
+    lea edi, h1
+    mov dword ptr [edi], RVZ_MAGIC_W        ; "RVZ" 01
+    lea eax, [edi + 4]
+    invoke RwBE32, eax, 01000000h           ; version 1.0
+    lea eax, [edi + 8]
+    invoke RwBE32, eax, 00030000h           ; readable by 0.3 and up
+    lea eax, [edi + 0Ch]
+    invoke RwBE32, eax, RVZ_W_H2
+    lea eax, [edi + 10h]
+    invoke RwSha1, hAlg, addr h2, RVZ_W_H2, eax
+    lea eax, [edi + 24h]
+    invoke RwBE32, eax, g_dfSizeHi          ; iso size
+    lea eax, [edi + 28h]
+    invoke RwBE32, eax, g_dfSizeLo
+    lea eax, [edi + 2Ch]
+    invoke RwBE32, eax, posHi               ; this file's size
+    lea eax, [edi + 30h]
+    invoke RwBE32, eax, posLo
+    lea eax, [edi + 34h]
+    invoke RwSha1, hAlg, edi, 34h, eax
+    invoke SetFilePointerEx, hOut, 0, 0, NULL, FILE_BEGIN
+    invoke DfWriteRaw, addr h1, RVZ_W_H1
+    invoke SetFilePointerEx, hOut, posLo, posHi, NULL, FILE_BEGIN
+    invoke SetEndOfFile, hOut
+    .IF g_dfErr == 0
+        mov ok, TRUE
+    .ENDIF
+done:
+    .IF hAlg != 0
+        invoke BCryptCloseAlgorithmProvider, hAlg, 0
+    .ENDIF
+    invoke VfsFreeMem, pGrp
+    invoke WrEnd, ok, hIn, hOut, pszDst
+    ret
+RvzWrapFile ENDP
 
 END

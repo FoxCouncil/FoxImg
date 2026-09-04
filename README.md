@@ -63,7 +63,7 @@ The convert returns exit code 0 on success and prints one line to the console it
 | PBP | .pbp | Yes | No | PS1 Classics EBOOT (PSISOIMG); multi-disc takes disc 1; encrypted PSP UMD declined |
 | CHD | .chd | Yes | Yes | Reads v5: zlib, LZMA, FLAC, all CD codecs, stored and self hunks; parented CHDs declined. Writes v5 CD images as chdman createcd does: one MODE1 track, cdzl hunks, the compressed map and both SHA-1s |
 | GCZ | .gcz | Yes | Yes | Dolphin: zlib and stored blocks with the Adler-32 block hashes Dolphin checks |
-| RVZ | .rvz | Yes | No | Dolphin, GameCube discs: Zstandard groups and packed junk; Wii (encrypted partitions) and WIA declined |
+| RVZ | .rvz | Yes | Yes | Dolphin, GameCube discs: reads Zstandard or stored groups and packed junk, Wii (encrypted partitions) and WIA declined; writes a GameCube disc as stored groups, untested in Dolphin |
 | WBFS | .wbfs | Planned | No | Wii backup file system |
 | GCM | .gcm .iso | Yes | Yes | Reads the big-endian FST; the system files show under sys. Writes a disc back with them, or a browse-only one without |
 | NKit | .nkit.iso | Planned | No | Wii / GameCube |
