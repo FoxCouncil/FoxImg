@@ -16,6 +16,11 @@ g_bGcm          dd 0
 g_gcFstOff      dd 0
 g_gcFstSize     dd 0
 WSTR szGcRoot, <GAMECUBE>
+WSTR szGcSysDir, <sys>
+WSTR szGcSysBoot, <boot.bin>
+WSTR szGcSysBi2, <bi2.bin>
+WSTR szGcSysApp, <apploader.img>
+WSTR szGcSysDol, <main.dol>
 
 .code
 
@@ -64,6 +69,93 @@ GcName PROC USES esi edi pszOut:DWORD, pSrc:DWORD, cbMax:DWORD
     ret
 GcName ENDP
 
+; A system file node under pSys: byteOff on the disc, cb bytes
+GcSysFile PROC USES edi pSys:DWORD, pszName:DWORD, byteOff:DWORD, cb:DWORD
+    invoke VfsNew, pSys, pszName, NF_ISO
+    .IF eax != 0
+        mov edi, eax
+        mov eax, byteOff
+        mov ecx, eax
+        shr eax, 11
+        and ecx, 2047
+        mov [edi].NODE.isoExtent, eax
+        mov [edi].NODE.isoByteRem, ecx
+        mov eax, cb
+        mov [edi].NODE.dataSize, eax
+        invoke VfsDateNow, edi
+    .ENDIF
+    ret
+GcSysFile ENDP
+
+; The disc's system area as files under "sys": boot.bin, bi2.bin, the
+; apploader (its header at 0x2440 gives the size) and main.dol (its header
+; gives the section extents). The writer takes them back from here.
+GcSysBuild PROC USES esi edi ebx pRoot:DWORD
+    LOCAL pSys:DWORD
+    LOCAL dolOff:DWORD
+    LOCAL dolHdr[256]:BYTE
+    LOCAL appHdr[32]:BYTE
+    invoke VfsNew, pRoot, offset szGcSysDir, NF_ISO or NF_DIR
+    .IF eax == 0
+        ret
+    .ENDIF
+    mov pSys, eax
+    invoke VfsDateNow, pSys
+    invoke GcSysFile, pSys, offset szGcSysBoot, 0, 440h
+    invoke GcSysFile, pSys, offset szGcSysBi2, 440h, 2000h
+    ; the apploader sits between bi2 and the FST; nothing there when the FST starts at 0x2440
+    invoke IsoReadBytes, 4, 440h, 32, addr appHdr
+    .IF eax != 0 && g_gcFstOff > 2440h
+        invoke BSwap32, dword ptr appHdr[14h]
+        mov ebx, eax
+        invoke BSwap32, dword ptr appHdr[18h]
+        add ebx, eax
+        add ebx, 20h
+        mov eax, ebx
+        add eax, 2440h
+        .IF ebx > 20h && ebx < 800000h && eax <= g_gcFstOff
+            invoke GcSysFile, pSys, offset szGcSysApp, 2440h, ebx
+        .ENDIF
+    .ENDIF
+    invoke IsoSectorPtr, 0
+    .IF eax != 0
+        push eax
+        invoke BSwap32, dword ptr [eax + 420h]
+        mov dolOff, eax
+        pop eax
+        .IF dolOff != 0
+            mov edi, dolOff
+            mov esi, edi
+            shr edi, 11
+            and esi, 2047
+            invoke IsoReadBytes, edi, esi, 256, addr dolHdr
+            .IF eax != 0
+                ; size: the furthest section end; offsets at 0, sizes at 0x90, 18 sections
+                xor ebx, ebx
+                xor esi, esi
+                .WHILE esi < 18
+                    invoke BSwap32, dword ptr dolHdr[esi * 4]
+                    .IF eax != 0
+                        mov edi, eax
+                        invoke BSwap32, dword ptr dolHdr[esi * 4 + 90h]
+                        add eax, edi
+                        .IF eax > ebx
+                            mov ebx, eax
+                        .ENDIF
+                    .ENDIF
+                    inc esi
+                .ENDW
+                mov eax, dolOff
+                add eax, ebx
+                .IF ebx >= 100h && ebx < 4000000h && dolOff >= 2460h && eax <= g_gcFstOff
+                    invoke GcSysFile, pSys, offset szGcSysDol, dolOff, ebx
+                .ENDIF
+            .ENDIF
+        .ENDIF
+    .ENDIF
+    ret
+GcSysBuild ENDP
+
 GcBuild PROC USES esi edi ebx pRoot:DWORD
     LOCAL pFst:DWORD
     LOCAL nEnt:DWORD
@@ -95,6 +187,7 @@ GcBuild PROC USES esi edi ebx pRoot:DWORD
         .ENDIF
     .ENDIF
 
+    invoke GcSysBuild, pRoot
     mov eax, g_gcFstSize
     add eax, 2
     invoke VfsAlloc, eax

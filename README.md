@@ -65,7 +65,7 @@ The convert returns exit code 0 on success and prints one line to the console it
 | GCZ | .gcz | Yes | Yes | Dolphin: zlib and stored blocks with the Adler-32 block hashes Dolphin checks |
 | RVZ | .rvz | Yes | No | Dolphin, GameCube discs: Zstandard groups and packed junk; Wii (encrypted partitions) and WIA declined |
 | WBFS | .wbfs | Planned | No | Wii backup file system |
-| GCM | .gcm .iso | Yes | No | Big-endian FST reader; files need no block alignment |
+| GCM | .gcm .iso | Yes | Yes | Reads the big-endian FST; the system files show under sys. Writes a disc back with them, or a browse-only one without |
 | NKit | .nkit.iso | Planned | No | Wii / GameCube |
 | ISZ | .isz | Yes | Yes | UltraISO: reads zlib, bzip2, raw and zero chunks, AES declined; writes zlib, raw and zero |
 | DAA | .daa | Yes | Yes | PowerISO v0x100 deflate; v0x110, LZMA and encrypted declined |

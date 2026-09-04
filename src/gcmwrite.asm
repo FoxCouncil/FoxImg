@@ -117,18 +117,13 @@ GwEmitDir PROC USES esi edi ebx pDir:DWORD, parentIdx:DWORD
         mov dword ptr [edi], eax            ; name offset, big-endian, in the top three bytes
         invoke XwName, ebx, addr szName
         mov ecx, eax
-        mov esi, g_gwFst
-        add esi, g_gwEntries
-        add esi, g_gwEntries
-        add esi, g_gwEntries                ; the string table starts after entries * 12
-        lea esi, [esi + g_gwEntries * 0]
-        mov edx, g_gwEntries
-        shl edx, 3
-        add esi, edx
-        add esi, g_gwStrPos
         push ecx
         push edi
-        lea edi, [esi]
+        mov edi, g_gwEntries
+        lea edi, [edi + edi * 2]
+        shl edi, 2                          ; the string table starts after entries * 12
+        add edi, g_gwFst
+        add edi, g_gwStrPos
         lea esi, szName
         rep movsb
         mov byte ptr [edi], 0
@@ -297,7 +292,7 @@ GcmWrite PROC USES esi edi ebx pszOutPath:DWORD
     mov pApp, eax
     invoke GwChild, g_gwSys, offset szGcDol
     mov pDol, eax
-    .IF pBoot != 0 && [eax].NODE.dataSize != GCM_BOOT
+    .IF pBoot != 0
         mov eax, pBoot
         .IF [eax].NODE.dataSize != GCM_BOOT
             mov pBoot, 0                    ; not a boot block after all
@@ -385,6 +380,8 @@ GcmWrite PROC USES esi edi ebx pszOutPath:DWORD
     .IF CARRY?
         jmp cleanup_fail                    ; past 4 GB
     .ENDIF
+    add eax, ISO_SECTOR - 1
+    and eax, -ISO_SECTOR
     mov g_progTotal, eax
     mov g_progTotalHi, 0
     invoke CreateFileW, pszOutPath, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL
@@ -448,6 +445,12 @@ GcmWrite PROC USES esi edi ebx pszOutPath:DWORD
     .IF g_fail == 0
         invoke GwWriteFiles, g_pRootNode
     .ENDIF
+    ; the disc ends on a 2048-byte block, as readers that map blocks expect
+    mov eax, dataOff
+    add eax, g_gwDataPos
+    neg eax
+    and eax, ISO_SECTOR - 1
+    invoke GwZeros, eax
     ; the header fields at 0x420
     .IF g_fail == 0
         mov eax, dolOff

@@ -1144,6 +1144,11 @@ WriteFiles          PROTO :DWORD                ; pDir: file data, sector padded
 EXTERNDEF g_pDirs:DWORD
 EXTERNDEF g_nDirs:DWORD
 XdvdfsWrite         PROTO :DWORD                ; pszOutPath -> BOOL: the VFS as an Xbox XISO
+XwCollect           PROTO :DWORD                ; pDir -> BOOL: children sorted without case into g_xwSorted / g_xwCount
+XwName              PROTO :DWORD,:DWORD         ; pNode, pDst (255) -> ASCII length
+EXTERNDEF g_xwSorted:DWORD
+EXTERNDEF g_xwCount:DWORD
+GcmWrite            PROTO :DWORD                ; pszOutPath -> BOOL: the VFS as a GameCube disc
 FID_DIR_FLAG        equ 02h
 FID_PARENT_DIR      equ 0Ah
 EXTERNDEF g_progDoneHi:DWORD
@@ -1238,8 +1243,9 @@ SAVE_NRG                equ 12
 SAVE_ZSO                equ 13
 SAVE_CHD                equ 14
 SAVE_BZ2                equ 15
-SAVE_XISO               equ 16              ; a filesystem writer: no ISO first, no second pass
-SAVE_RAW                equ 17              ; raw MODE1/2352 data for the cue, toc, ccd and mds descriptors
+SAVE_XISO               equ 16              ; filesystem writers: no ISO first, no second pass
+SAVE_GCM                equ 17
+SAVE_RAW                equ 18              ; raw MODE1/2352 data for the cue, toc, ccd and mds descriptors
 
 ; ---------------------------------------------------------------------------
 ; Optical containers (container.asm): NRG, MDS/MDF, CCD/IMG, GDI, TOC, generic scan

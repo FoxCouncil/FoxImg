@@ -50,6 +50,7 @@ WSTR szExtZsoDot, <.zso>
 WSTR szExtChdDot, <.chd>
 WSTR szExtBz2Dot, <.bz2>
 WSTR szExtXisoDot, <.xiso>
+WSTR szExtGcmDot, <.gcm>
 WSTR szExtMdsDot, <.mds>
 WSTR szExtMdfDot, <.mdf>
 WSTR szExtIszDot, <.isz>
@@ -62,7 +63,7 @@ WSTR szExtDmgDot, <.dmg>
 ; save extensions in SAVE_* order: the index plus one is the kind
 g_saveExts  dd offset szExtGzDot, offset szExtZipDot, offset szExtCsoDot, offset szExtIszDot, offset szExtDaxDot
             dd offset szExtJsoDot, offset szExtGczDot, offset szExtUifDot, offset szExtDaaDot, offset szExtDmgDot
-            dd offset szExtEcmDot, offset szExtNrgDot, offset szExtZsoDot, offset szExtChdDot, offset szExtBz2Dot, offset szExtXisoDot, 0
+            dd offset szExtEcmDot, offset szExtNrgDot, offset szExtZsoDot, offset szExtChdDot, offset szExtBz2Dot, offset szExtXisoDot, offset szExtGcmDot, 0
 WSTR szTmpSuffix, <.tmp>
 WSTR szSwRaw, </raw>
 WSTR szSwXiso, </xiso>
@@ -120,6 +121,8 @@ szFilterSave LABEL WORD
     dw '*','.','b','z','2',0
     dw 'X','b','o','x',' ','X','I','S','O',' ','(','*','.','i','s','o',')',0
     dw '*','.','i','s','o',0
+    dw 'G','a','m','e','C','u','b','e',' ','d','i','s','c',' ','(','*','.','g','c','m',')',0
+    dw '*','.','g','c','m',0
     dw 0
 szFilterAll LABEL WORD
     dw 'A','l','l',' ','F','i','l','e','s',' ','(','*','.','*',')',0
